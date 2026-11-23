@@ -74,6 +74,8 @@ def import_textures():
     for png_file in sorted(tex_dir.glob("*.png")):
         stem = png_file.stem
         dest = tex_routing.get(stem, f"{UE_WIZARD}/Environment/Textures")
+        if unreal.EditorAssetLibrary.does_asset_exist(f"{dest}/{stem}"):
+            continue
         _ensure_dir(dest)
 
         task = unreal.AssetImportTask()
@@ -102,6 +104,8 @@ def import_audio():
             dest = f"{UE_WIZARD}/Audio/Music"
         else:
             dest = f"{UE_WIZARD}/Audio/SFX"
+        if unreal.EditorAssetLibrary.does_asset_exist(f"{dest}/{stem}"):
+            continue
         _ensure_dir(dest)
 
         task = unreal.AssetImportTask()
@@ -130,6 +134,8 @@ def import_meshes():
             dest = f"{UE_WIZARD}/FX/Meshes"
         else:
             dest = f"{UE_WIZARD}/Environment/Meshes"
+        if unreal.EditorAssetLibrary.does_asset_exist(f"{dest}/{stem}"):
+            continue
         _ensure_dir(dest)
 
         task = unreal.AssetImportTask()
@@ -159,6 +165,8 @@ def import_destruction_meshes():
             continue
         for obj_file in sorted(shape_dir.glob("*.obj")):
             stem = obj_file.stem
+            if unreal.EditorAssetLibrary.does_asset_exist(f"{dest_root}/{stem}"):
+                continue
             task = unreal.AssetImportTask()
             task.set_editor_property("filename", str(obj_file))
             task.set_editor_property("destination_path", dest_root)
@@ -190,6 +198,7 @@ def create_materials():
         full = f"{env_mat_path}/{mat_name}"
         if not unreal.EditorAssetLibrary.does_asset_exist(full):
             mat = at.create_asset(mat_name, env_mat_path, unreal.Material, mf)
+            unreal.EditorAssetLibrary.save_loaded_asset(mat)
             _log(f"Created material {mat_name}")
 
     # FX materials
@@ -209,6 +218,7 @@ def create_materials():
                 mat.set_editor_property("shading_model", unreal.MaterialShadingModel.MSM_UNLIT)
             elif mat_name.startswith("M_Decal_"):
                 mat.set_editor_property("material_domain", unreal.MaterialDomain.MD_DEFERRED_DECAL)
+            unreal.EditorAssetLibrary.save_loaded_asset(mat)
             _log(f"Created FX material {mat_name}")
 
     # UI materials
@@ -219,6 +229,7 @@ def create_materials():
         if not unreal.EditorAssetLibrary.does_asset_exist(full):
             mat = at.create_asset(mat_name, ui_mat_path, unreal.Material, mf)
             mat.set_editor_property("material_domain", unreal.MaterialDomain.MD_UI)
+            unreal.EditorAssetLibrary.save_loaded_asset(mat)
             _log(f"Created UI material {mat_name}")
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -250,8 +261,9 @@ def create_spell_data_assets(layout: dict):
 
         sd = spells.get(elem, {})
 
-        # Set properties
-        elem_enum_val = {"Fire": 0, "Earth": 1, "Wind": 2, "Lightning": 3}[elem]
+        # Set properties (UE 5.8 Python expects typed enum instances)
+        elem_enum_cls = getattr(unreal, "SpellElement", None)
+        elem_enum_val = getattr(elem_enum_cls, elem.upper()) if elem_enum_cls else 0
         da.set_editor_property("element", elem_enum_val)
         da.set_editor_property("display_name", unreal.Text(elem))
         da.set_editor_property("cooldown", sd.get("cooldown", 1.2))
@@ -272,8 +284,10 @@ def create_spell_data_assets(layout: dict):
 
         # Delivery-specific
         delivery = sd.get("delivery", "Projectile")
-        delivery_map = {"Projectile": 0, "GroundLine": 1, "Cone": 2, "Strike": 3}
-        da.set_editor_property("delivery", delivery_map.get(delivery, 0))
+        deliv_cls = getattr(unreal, "SpellDelivery", None)
+        deliv_attr = {"Projectile": "PROJECTILE", "GroundLine": "GROUND_LINE", "Cone": "CONE", "Strike": "STRIKE"}.get(delivery, "PROJECTILE")
+        deliv_val = getattr(deliv_cls, deliv_attr, getattr(deliv_cls, delivery.upper(), None)) if deliv_cls else 0
+        da.set_editor_property("delivery", deliv_val)
 
         if delivery == "Projectile":
             da.set_editor_property("projectile_speed", sd.get("proj_speed", 4200.0))
@@ -308,17 +322,25 @@ def create_spell_data_assets(layout: dict):
         da.set_editor_property("charge_sound", unreal.Name(sd.get("charge_sound", "")))
         da.set_editor_property("impact_sound", unreal.Name(sd.get("impact_sound", "")))
 
-        # Icon
+        # Icon (SoftObjectProperty expects loaded Texture2D in UE 5.8 Python)
         icon_path = f"{UE_WIZARD}/UI/Icons/T_Icon_{elem}"
-        da.set_editor_property("icon", unreal.SoftObjectPath(icon_path))
+        icon_tex = unreal.EditorAssetLibrary.load_asset(icon_path)
+        if icon_tex:
+            da.set_editor_property("icon", icon_tex)
 
-        # Damage multipliers
+        # Damage multipliers (BlueprintReadOnly struct fields use set_editor_property)
         dmg = sd.get("dmg_table", {})
-        dt = da.get_editor_property("damage_multipliers")
-        for mat in C.MATERIALS:
-            prop = mat.lower()
-            if hasattr(dt, prop):
-                setattr(dt, prop, dmg.get(mat, 1.0))
+        try:
+            dt = da.get_editor_property("damage_multipliers")
+            for mat in C.MATERIALS:
+                prop = mat.lower()
+                try:
+                    dt.set_editor_property(prop, float(dmg.get(mat, 1.0)))
+                except Exception:
+                    pass
+            da.set_editor_property("damage_multipliers", dt)
+        except Exception as exc:
+            _log(f"  note: damage_multipliers skipped ({exc})")
 
         unreal.EditorAssetLibrary.save_loaded_asset(da)
         _log(f"Created/updated spell data asset: {da_name}")
@@ -347,8 +369,10 @@ def create_destructible_definitions(layout: dict):
             continue
 
         # Material enum
-        mat_map = {m: i for i, m in enumerate(C.MATERIALS)}
-        dd.set_editor_property("material", mat_map.get(data["material"], 0))
+        mat_cls = getattr(unreal, "DestructibleMaterial", None)
+        mat_name_raw = data["material"]
+        mat_val = getattr(mat_cls, mat_name_raw.upper()) if mat_cls else 0
+        dd.set_editor_property("material", mat_val)
         dd.set_editor_property("health", data.get("health", 100.0))
         dd.set_editor_property("score_per_piece", data.get("score_per_piece", 10))
         dd.set_editor_property("collapse_bonus", data.get("collapse_bonus", 100))
@@ -380,7 +404,10 @@ def create_destructible_definitions(layout: dict):
             piece_def.set_editor_property("mass", pd.get("mass", 25.0))
             piece_def.set_editor_property("health", pd.get("health", 100.0))
             piece_def.set_editor_property("extent", unreal.Vector(*pd.get("extent", (25, 25, 25))))
-            piece_def.set_editor_property("b_grounded", pd.get("grounded", False))
+            try:
+                piece_def.set_editor_property("grounded", pd.get("grounded", False))
+            except Exception:
+                piece_def.set_editor_property("b_grounded", pd.get("grounded", False))
             piece_def.set_editor_property("supports", pd.get("supports", []))
             piece_def.set_editor_property("laterals", pd.get("laterals", []))
             pieces_arr.append(piece_def)
@@ -566,12 +593,10 @@ def build_arena_level(layout: dict):
             mesh = unreal.EditorAssetLibrary.load_asset(f"{UE_WIZARD}/Environment/Meshes/{mesh_name}")
             if not mesh:
                 continue
-            # Ensure the layer exists
+            # Use pre-created ISMC layers on AWizardScatterSet
             layers = scatter_actor.get_editor_property("instance_layers")
-            while len(layers) <= layer_idx:
-                # Add a new ISMC layer
-                new_comp = unreal.InstancedStaticMeshComponent(scatter_actor)
-                layers.append(new_comp)
+            if layer_idx >= len(layers):
+                break
             layers[layer_idx].set_static_mesh(mesh)
 
             count = cfg.get("count", 100)
