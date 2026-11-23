@@ -3,6 +3,7 @@
 #include "CameraFX.h"
 #include "Components/AudioComponent.h"
 #include "Components/SkeletalMeshComponent.h"
+#include "Components/StaticMeshComponent.h"
 #include "Engine/World.h"
 #include "FXSubsystem.h"
 #include "GameFramework/Character.h"
@@ -14,6 +15,7 @@
 #include "SpellDataAsset.h"
 #include "UObject/SoftObjectPath.h"
 #include "WizardAudioSubsystem.h"
+#include "WizardCharacter.h"
 #include "WizardGameMode.h"
 #include "WizardHUD.h"
 #include "WizardPlayerController.h"
@@ -174,6 +176,31 @@ namespace
 			break;
 		}
 		return Spell;
+	}
+
+	FVector ComputeAimFireDirection(AActor* Owner, const FVector& HandLoc, const FVector& AimPoint, const FVector& AimDir)
+	{
+		FVector FallbackDir = AimDir.GetSafeNormal();
+		if (FallbackDir.IsNearlyZero())
+		{
+			FallbackDir = (AimPoint - HandLoc).GetSafeNormal();
+		}
+		if (FallbackDir.IsNearlyZero())
+		{
+			FallbackDir = Owner ? Owner->GetActorForwardVector() : FVector::ForwardVector;
+		}
+
+		const FVector SpawnLoc = HandLoc + FallbackDir * 70.f;
+		const FVector ToTarget = AimPoint - SpawnLoc;
+		if (FVector::DotProduct(ToTarget, FallbackDir) > 10.f)
+		{
+			const FVector FireDir = ToTarget.GetSafeNormal();
+			if (!FireDir.IsNearlyZero())
+			{
+				return FireDir;
+			}
+		}
+		return FallbackDir;
 	}
 }
 
@@ -427,10 +454,23 @@ void UWizardAbilityComponent::CastAt(const FVector& AimPoint, float ForceChargeT
 		return;
 	}
 
+	const FVector InitialHandLoc = GetHandLocation();
+	const FVector AimDir = (AimPoint - InitialHandLoc).GetSafeNormal();
+	if (AActor* Owner = GetOwner())
+	{
+		if (!AimDir.IsNearlyZero())
+		{
+			FRotator ActorRot = Owner->GetActorRotation();
+			ActorRot.Yaw = AimDir.Rotation().Yaw;
+			Owner->SetActorRotation(ActorRot);
+		}
+	}
+
 	const FVector HandLoc = GetHandLocation();
-	const FVector Dir = (AimPoint - HandLoc).GetSafeNormal();
-	UWizardSpellLibrary::CastSpell(this, Spell, AimPoint, Dir, FMath::Clamp(ForceChargeT01, 0.f, 1.f));
-	OnSpellCast.Broadcast(SelectedIndex, FMath::Clamp(ForceChargeT01, 0.f, 1.f));
+	const FVector FireDir = ComputeAimFireDirection(GetOwner(), HandLoc, AimPoint, AimDir);
+	const float ClampedCharge = FMath::Clamp(ForceChargeT01, 0.f, 1.f);
+	UWizardSpellLibrary::CastSpell(this, Spell, AimPoint, FireDir, ClampedCharge);
+	OnSpellCast.Broadcast(SelectedIndex, ClampedCharge);
 }
 
 bool UWizardAbilityComponent::GetAim(FVector& OutPoint, FVector& OutDirection) const
@@ -454,6 +494,14 @@ FVector UWizardAbilityComponent::GetHandLocation() const
 	if (!Owner)
 	{
 		return FVector::ZeroVector;
+	}
+
+	if (const AWizardCharacter* WC = Cast<AWizardCharacter>(Owner))
+	{
+		if (WC->StaffOrbMesh && WC->StaffOrbMesh->IsRegistered())
+		{
+			return WC->GetStaffOrbLocation();
+		}
 	}
 
 	if (const USkeletalMeshComponent* Mesh = Owner->FindComponentByClass<USkeletalMeshComponent>())
@@ -640,7 +688,9 @@ void UWizardAbilityComponent::ApplyPendingCast()
 		Owner->SetActorRotation(ActorRot);
 	}
 
-	UWizardSpellLibrary::CastSpell(this, Spell, AimPoint, AimDir, PendingChargeT01);
+	const FVector HandLoc = GetHandLocation();
+	const FVector FireDir = ComputeAimFireDirection(GetOwner(), HandLoc, AimPoint, AimDir);
+	UWizardSpellLibrary::CastSpell(this, Spell, AimPoint, FireDir, PendingChargeT01);
 	OnSpellCast.Broadcast(PendingCastSlot, PendingChargeT01);
 }
 

@@ -12,6 +12,7 @@
 #include "WizardTypes.h"
 #include "HUDWidgets.generated.h"
 
+class UBorder;
 class UCanvasPanel;
 class UImage;
 class UMaterialInstanceDynamic;
@@ -47,13 +48,19 @@ public:
 private:
 	int32 SlotIndex = 0;
 	bool bSelected = false;
+	bool bBorderDirty = true;
 	float TargetScale = 1.f;
 	float CurrentScale = 1.f;
 	float Flash = 0.f;
 	FLinearColor Accent = FLinearColor::White;
 
+	void UpdateSelectionBorder();
+
 	UPROPERTY(Transient)
 	TObjectPtr<USizeBox> Root = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> GlassBg = nullptr;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UImage> Icon = nullptr;
@@ -63,6 +70,9 @@ private:
 
 	UPROPERTY(Transient)
 	TObjectPtr<UWidget> SelectionMark = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> SelectionMarkBorder = nullptr;
 
 	UPROPERTY(Transient)
 	TObjectPtr<UTextBlock> KeyLabel = nullptr;
@@ -126,6 +136,12 @@ private:
 	TObjectPtr<UOverlay> Root = nullptr;
 
 	UPROPERTY(Transient)
+	TObjectPtr<UOverlay> CrosshairContainer = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UBorder> CrosshairFrame = nullptr;
+
+	UPROPERTY(Transient)
 	TObjectPtr<UImage> CrosshairDot = nullptr;
 
 	UPROPERTY(Transient)
@@ -159,6 +175,7 @@ private:
 	TArray<TObjectPtr<UWizardScorePopupWidget>> Popups;
 
 	TWeakObjectPtr<UWizardAbilityComponent> Abilities;
+	FLinearColor CurrentCrosshairAccent = FLinearColor(-1.f, -1.f, -1.f, 1.f);
 	float CrosshairKick = 0.f;
 	int64 LastShownScore = -1;
 	float TitleAge = -1.f;

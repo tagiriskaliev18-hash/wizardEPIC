@@ -18,6 +18,7 @@ public:
 	AWizardPlayerController();
 
 	virtual void BeginPlay() override;
+	virtual void PlayerTick(float DeltaTime) override;
 	virtual void SetupInputComponent() override;
 
 	/** Screen-centre aim point and direction along the camera ray (first blocking hit, else a far point). */
@@ -43,6 +44,11 @@ public:
 	void OnSprintReleased();
 	void OnResetPressed();
 	void OnHintsPressed();
+	void OnLookYaw(float Val);
+	void OnLookPitch(float Val);
+	void OnJumpPressed();
+	void OnJumpReleased();
+	void OnEscapePressed();
 
 private:
 	/** True while the mouse is captured for gameplay. */

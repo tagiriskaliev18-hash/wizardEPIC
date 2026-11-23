@@ -20,9 +20,11 @@ AWizardProjectile::AWizardProjectile()
 	PrimaryActorTick.bCanEverTick = true;
 
 	Collision = CreateDefaultSubobject<USphereComponent>(TEXT("Collision"));
-	Collision->InitSphereRadius(28.f);
+	Collision->InitSphereRadius(32.f);
 	Collision->SetCollisionProfileName(TEXT("BlockAllDynamic"));
 	Collision->SetNotifyRigidBodyCollision(true);
+	Collision->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+	Collision->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 	Collision->OnComponentHit.AddDynamic(this, &AWizardProjectile::OnComponentHit);
 	RootComponent = Collision;
 
@@ -33,9 +35,9 @@ AWizardProjectile::AWizardProjectile()
 
 	Light = CreateDefaultSubobject<UPointLightComponent>(TEXT("Light"));
 	Light->SetupAttachment(Collision);
-	Light->SetIntensityUnits(ELightUnits::Candelas);
-	Light->SetIntensity(1.5e6f);
-	Light->SetAttenuationRadius(1100.f);
+	Light->SetIntensityUnits(ELightUnits::Lumens);
+	Light->SetIntensity(75.f);
+	Light->SetAttenuationRadius(520.f);
 	Light->SetCastShadows(false);
 
 	Movement = CreateDefaultSubobject<UProjectileMovementComponent>(TEXT("Movement"));
@@ -64,7 +66,8 @@ AWizardProjectile* AWizardProjectile::Launch(USpellDataAsset* InSpell, float InC
 	Params.Instigator = Cast<APawn>(Caster);
 	Params.SpawnCollisionHandlingOverride = ESpawnActorCollisionHandlingMethod::AlwaysSpawn;
 
-	AWizardProjectile* Proj = World->SpawnActor<AWizardProjectile>(AWizardProjectile::StaticClass(), Start, DirN.Rotation(), Params);
+	const FVector SpawnLoc = Start + DirN * 65.f;
+	AWizardProjectile* Proj = World->SpawnActor<AWizardProjectile>(AWizardProjectile::StaticClass(), SpawnLoc, DirN.Rotation(), Params);
 	if (!Proj)
 	{
 		return nullptr;
@@ -77,7 +80,8 @@ AWizardProjectile* AWizardProjectile::Launch(USpellDataAsset* InSpell, float InC
 	const float ChargeScale = InSpell->GetChargeScale(Proj->ChargeT01);
 	if (Proj->Collision)
 	{
-		Proj->Collision->SetSphereRadius(InSpell->ProjectileRadius * FMath::Lerp(1.f, 1.45f, Proj->ChargeT01));
+		const float SphereRadius = FMath::Max(32.f, InSpell->ProjectileRadius * FMath::Lerp(1.f, 1.45f, Proj->ChargeT01));
+		Proj->Collision->SetSphereRadius(SphereRadius);
 		Proj->Collision->IgnoreActorWhenMoving(Caster, true);
 	}
 	if (Proj->Movement)
@@ -89,8 +93,9 @@ AWizardProjectile* AWizardProjectile::Launch(USpellDataAsset* InSpell, float InC
 	}
 	if (Proj->Light)
 	{
+		Proj->Light->SetIntensityUnits(ELightUnits::Lumens);
 		Proj->Light->SetLightColor(InSpell->Color);
-		Proj->Light->SetIntensity(1.5e6f * ChargeScale);
+		Proj->Light->SetIntensity(75.f * ChargeScale);
 	}
 
 	if (UWizardFXSubsystem* FX = UWizardFXSubsystem::Get(World))
@@ -116,12 +121,12 @@ AWizardProjectile* AWizardProjectile::Launch(USpellDataAsset* InSpell, float InC
 			{
 				UMaterialInstanceDynamic* MID = UMaterialInstanceDynamic::Create(Mat, Proj->Visual);
 				MID->SetVectorParameterValue(TEXT("Tint"), InSpell->Color);
-				MID->SetScalarParameterValue(TEXT("EmissiveScale"), 28.f);
+				MID->SetScalarParameterValue(TEXT("EmissiveScale"), 6.5f);
 				MID->SetScalarParameterValue(TEXT("Fade"), 1.f);
 				Proj->Visual->SetMaterial(0, MID);
 			}
 
-			const float VisualScale = (InSpell->ProjectileRadius / 50.f) * FMath::Lerp(1.f, 1.55f, Proj->ChargeT01);
+			const float VisualScale = FMath::Max(1.15f, (InSpell->ProjectileRadius / 30.f) * FMath::Lerp(1.f, 1.55f, Proj->ChargeT01));
 			Proj->Visual->SetRelativeScale3D(FVector(VisualScale));
 		}
 

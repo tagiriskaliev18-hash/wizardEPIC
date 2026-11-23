@@ -9,7 +9,18 @@ setlocal
 set "PROJECT_DIR=%~dp0"
 set "UPROJECT=%PROJECT_DIR%wizardEPIC.uproject"
 set "FORGE_DIR=%PROJECT_DIR%Scripts\forge"
-set "UE_EDITOR=C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+set "UE_EDITOR="
+for %%D in (
+    "%USERPROFILE%\Epic Games\UE_5.8"
+    "C:\Program Files\Epic Games\UE_5.8"
+    "D:\Epic Games\UE_5.8"
+) do (
+    if exist "%%~D\Engine\Binaries\Win64\UnrealEditor-Cmd.exe" (
+        set "UE_EDITOR=%%~D\Engine\Binaries\Win64\UnrealEditor-Cmd.exe"
+        goto :found_ue
+    )
+)
+:found_ue
 
 REM — Find Python (uv-managed or system) ——————————————————————————————
 set "PYTHON="

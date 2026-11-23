@@ -22,7 +22,9 @@
 #include "GameFramework/PlayerController.h"
 #include "Materials/MaterialInstanceDynamic.h"
 #include "Materials/MaterialInterface.h"
+#include "Misc/PackageName.h"
 #include "SpellDataAsset.h"
+#include "Styling/SlateBrush.h"
 #include "UObject/SoftObjectPath.h"
 #include "WizardAbilityComponent.h"
 #include "WizardDestructionSubsystem.h"
@@ -34,12 +36,76 @@ namespace
 	FSlateFontInfo MakeWizardFont(int32 Size, bool bDisplay = false)
 	{
 		const TCHAR* Path = bDisplay ? WizardPaths::DisplayFont : WizardPaths::BodyFont;
-		if (UFont* Font = Cast<UFont>(FSoftObjectPath(Path).TryLoad()))
+		static bool bCheckedDisplay = false;
+		static bool bExistsDisplay = false;
+		static bool bCheckedBody = false;
+		static bool bExistsBody = false;
+
+		bool& bChecked = bDisplay ? bCheckedDisplay : bCheckedBody;
+		bool& bExists = bDisplay ? bExistsDisplay : bExistsBody;
+		if (!bChecked)
 		{
-			return FSlateFontInfo(Font, Size);
+			bChecked = true;
+			const FString PackageName = FSoftObjectPath(Path).GetLongPackageName();
+			bExists = !PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName);
 		}
-		FSlateFontInfo Fallback = FCoreStyle::GetDefaultFontStyle(bDisplay ? "Bold" : "Regular", Size);
-		return Fallback;
+
+		if (bExists)
+		{
+			if (UFont* Font = Cast<UFont>(FSoftObjectPath(Path).TryLoad()))
+			{
+				return FSlateFontInfo(Font, Size);
+			}
+		}
+		return FCoreStyle::GetDefaultFontStyle(bDisplay ? "Bold" : "Regular", Size);
+	}
+
+	template <typename T>
+	T* TryLoadAssetChecked(const FString& ObjectPath)
+	{
+		const FSoftObjectPath SoftPath(ObjectPath);
+		const FString PackageName = SoftPath.GetLongPackageName();
+		if (!PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName))
+		{
+			return Cast<T>(SoftPath.TryLoad());
+		}
+		return nullptr;
+	}
+
+	FSlateBrush MakeRoundedOutlineBrush(const FLinearColor& FillColor, const FLinearColor& OutlineColor, float OutlineWidth, float CornerRadius, bool bCircle = false)
+	{
+		FSlateBrush Brush;
+		Brush.DrawAs = ESlateBrushDrawType::RoundedBox;
+		Brush.TintColor = FSlateColor(FillColor);
+		Brush.OutlineSettings.Color = FSlateColor(OutlineColor);
+		Brush.OutlineSettings.Width = OutlineWidth;
+		Brush.OutlineSettings.RoundingType = bCircle ? ESlateBrushRoundingType::HalfHeightRadius : ESlateBrushRoundingType::FixedRadius;
+		Brush.OutlineSettings.CornerRadii = FVector4(CornerRadius, CornerRadius, CornerRadius, CornerRadius);
+		return Brush;
+	}
+
+	const TCHAR* GetShortElementName(ESpellElement Element)
+	{
+		switch (Element)
+		{
+		case ESpellElement::Fire:      return TEXT("Огонь");
+		case ESpellElement::Earth:     return TEXT("Земля");
+		case ESpellElement::Wind:      return TEXT("Ветер");
+		case ESpellElement::Lightning: return TEXT("Молния");
+		default:                       return TEXT("");
+		}
+	}
+
+	FLinearColor GetDefaultElementAccent(int32 SlotIndex)
+	{
+		switch (SlotIndex)
+		{
+		case 0:  return FLinearColor(1.00f, 0.45f, 0.12f, 1.f);
+		case 1:  return FLinearColor(0.75f, 0.52f, 0.23f, 1.f);
+		case 2:  return FLinearColor(0.65f, 0.88f, 0.85f, 1.f);
+		case 3:  return FLinearColor(0.78f, 0.90f, 1.00f, 1.f);
+		default: return FLinearColor::White;
+		}
 	}
 }
 
@@ -55,18 +121,18 @@ USpellSlotWidget::USpellSlotWidget(const FObjectInitializer& ObjectInitializer)
 void USpellSlotWidget::Setup(int32 InSlotIndex)
 {
 	SlotIndex = InSlotIndex;
+	Accent = GetDefaultElementAccent(SlotIndex);
 	if (!WidgetTree)
 	{
 		return;
 	}
 
 	Root = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-	Root->SetWidthOverride(78.f);
-	Root->SetHeightOverride(78.f);
+	Root->SetWidthOverride(88.f);
+	Root->SetHeightOverride(82.f);
 	WidgetTree->RootWidget = Root;
 
-	UBorder* GlassBg = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	GlassBg->SetBrushColor(FLinearColor(0.035f, 0.035f, 0.06f, 0.78f));
+	GlassBg = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
 	GlassBg->SetPadding(FMargin(4.f));
 	Root->AddChild(GlassBg);
 
@@ -79,13 +145,13 @@ void USpellSlotWidget::Setup(int32 InSlotIndex)
 	{
 		S->SetHorizontalAlignment(HAlign_Fill);
 		S->SetVerticalAlignment(VAlign_Fill);
-		S->SetPadding(FMargin(6.f));
+		S->SetPadding(FMargin(6.f, 16.f, 6.f, 5.f));
 	}
 
 	CooldownImage = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass());
 	CooldownImage->SetColorAndOpacity(FLinearColor(0.02f, 0.02f, 0.04f, 0.72f));
 	CooldownImage->SetVisibility(ESlateVisibility::Collapsed);
-	if (UMaterialInterface* Mat = Cast<UMaterialInterface>(FSoftObjectPath(TEXT("/Game/Wizard/UI/Materials/M_UI_Cooldown")).TryLoad()))
+	if (UMaterialInterface* Mat = TryLoadAssetChecked<UMaterialInterface>(TEXT("/Game/Wizard/UI/Materials/M_UI_Cooldown")))
 	{
 		CooldownMaterial = UMaterialInstanceDynamic::Create(Mat, this);
 		CooldownImage->SetBrushFromMaterial(CooldownMaterial);
@@ -98,14 +164,17 @@ void USpellSlotWidget::Setup(int32 InSlotIndex)
 	}
 
 	KeyLabel = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-	KeyLabel->SetText(FText::AsNumber(SlotIndex + 1));
-	KeyLabel->SetFont(MakeWizardFont(11, true));
-	KeyLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.75f, 0.80f, 0.90f, 0.9f)));
+	const ESpellElement DefaultElem = static_cast<ESpellElement>(FMath::Clamp(SlotIndex, 0, 3));
+	KeyLabel->SetText(FText::FromString(FString::Printf(TEXT("%d %s"), SlotIndex + 1, GetShortElementName(DefaultElem))));
+	KeyLabel->SetFont(MakeWizardFont(10, true));
+	KeyLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.86f, 0.90f, 0.97f, 0.95f)));
+	KeyLabel->SetShadowOffset(FVector2D(1.f, 1.f));
+	KeyLabel->SetShadowColorAndOpacity(FLinearColor(0.f, 0.f, 0.f, 0.85f));
 	if (UOverlaySlot* S = Ov->AddChildToOverlay(KeyLabel))
 	{
 		S->SetHorizontalAlignment(HAlign_Left);
 		S->SetVerticalAlignment(VAlign_Top);
-		S->SetPadding(FMargin(3.f, 1.f, 0.f, 0.f));
+		S->SetPadding(FMargin(4.f, 1.f, 0.f, 0.f));
 	}
 
 	CooldownLabel = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
@@ -129,12 +198,12 @@ void USpellSlotWidget::Setup(int32 InSlotIndex)
 		S->SetPadding(FMargin(2.f, 0.f, 2.f, 4.f));
 	}
 
-	UBorder* Mark = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
-	Mark->SetBrushColor(FLinearColor(0.f, 0.96f, 1.f, 0.95f));
-	Mark->SetDesiredSizeScale(FVector2D(1.f, 1.f));
+	SelectionMarkBorder = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+	SelectionMarkBorder->SetBrushColor(Accent);
+	SelectionMarkBorder->SetDesiredSizeScale(FVector2D(1.f, 1.f));
 	USizeBox* MarkBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
 	MarkBox->SetHeightOverride(3.f);
-	MarkBox->AddChild(Mark);
+	MarkBox->AddChild(SelectionMarkBorder);
 	SelectionMark = MarkBox;
 	SelectionMark->SetVisibility(ESlateVisibility::Collapsed);
 	if (UOverlaySlot* S = Ov->AddChildToOverlay(SelectionMark))
@@ -142,6 +211,9 @@ void USpellSlotWidget::Setup(int32 InSlotIndex)
 		S->SetHorizontalAlignment(HAlign_Fill);
 		S->SetVerticalAlignment(VAlign_Bottom);
 	}
+
+	bBorderDirty = true;
+	UpdateSelectionBorder();
 }
 
 void USpellSlotWidget::SetSpell(const USpellDataAsset* Spell)
@@ -151,6 +223,13 @@ void USpellSlotWidget::SetSpell(const USpellDataAsset* Spell)
 		return;
 	}
 	Accent = Spell->Color;
+	bBorderDirty = true;
+	UpdateSelectionBorder();
+
+	if (KeyLabel)
+	{
+		KeyLabel->SetText(FText::FromString(FString::Printf(TEXT("%d %s"), SlotIndex + 1, GetShortElementName(Spell->Element))));
+	}
 	if (ChargeBar)
 	{
 		ChargeBar->SetFillColorAndOpacity(Accent);
@@ -158,7 +237,7 @@ void USpellSlotWidget::SetSpell(const USpellDataAsset* Spell)
 	if (Icon)
 	{
 		const FString IconPath = Spell->GetIconPath();
-		if (UTexture2D* Tex = Cast<UTexture2D>(FSoftObjectPath(IconPath).TryLoad()))
+		if (UTexture2D* Tex = TryLoadAssetChecked<UTexture2D>(IconPath))
 		{
 			Icon->SetBrushFromTexture(Tex, false);
 			Icon->SetColorAndOpacity(FLinearColor::White);
@@ -172,11 +251,38 @@ void USpellSlotWidget::SetSpell(const USpellDataAsset* Spell)
 
 void USpellSlotWidget::SetSelected(bool bInSelected)
 {
-	bSelected = bInSelected;
+	if (bSelected != bInSelected)
+	{
+		bSelected = bInSelected;
+		bBorderDirty = true;
+	}
 	TargetScale = bSelected ? 1.12f : 0.96f;
 	if (SelectionMark)
 	{
 		SelectionMark->SetVisibility(bSelected ? ESlateVisibility::SelfHitTestInvisible : ESlateVisibility::Collapsed);
+	}
+	if (bBorderDirty)
+	{
+		UpdateSelectionBorder();
+	}
+}
+
+void USpellSlotWidget::UpdateSelectionBorder()
+{
+	bBorderDirty = false;
+	if (GlassBg)
+	{
+		const FLinearColor Fill = bSelected
+			? FLinearColor(0.05f, 0.055f, 0.11f, 0.88f)
+			: FLinearColor(0.035f, 0.035f, 0.06f, 0.78f);
+		const FLinearColor Outline = bSelected
+			? FLinearColor(Accent.R, Accent.G, Accent.B, 0.95f)
+			: FLinearColor(0.75f, 0.82f, 0.95f, 0.16f);
+		GlassBg->SetBrush(MakeRoundedOutlineBrush(Fill, Outline, bSelected ? 2.0f : 1.0f, 7.f, false));
+	}
+	if (SelectionMarkBorder)
+	{
+		SelectionMarkBorder->SetBrushColor(FLinearColor(Accent.R, Accent.G, Accent.B, 0.95f));
 	}
 }
 
@@ -339,16 +445,35 @@ void UWizardHUDWidget::NativeOnInitialized()
 	Root = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 	WidgetTree->RootWidget = Root;
 
-	// 1. Crosshair
+	// 1. Crosshair (center dot + elemental-tinted outer reticle ring)
 	{
-		USizeBox* DotBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
-		DotBox->SetWidthOverride(7.f);
-		DotBox->SetHeightOverride(7.f);
-		CrosshairDot = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass());
-		CrosshairDot->SetColorAndOpacity(FLinearColor(1.f, 1.f, 1.f, 0.88f));
-		DotBox->AddChild(CrosshairDot);
+		CrosshairContainer = WidgetTree->ConstructWidget<UOverlay>(UOverlay::StaticClass());
 
-		if (UOverlaySlot* S = Root->AddChildToOverlay(DotBox))
+		USizeBox* FrameBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+		FrameBox->SetWidthOverride(26.f);
+		FrameBox->SetHeightOverride(26.f);
+		CrosshairFrame = WidgetTree->ConstructWidget<UBorder>(UBorder::StaticClass());
+		CrosshairFrame->SetBrush(MakeRoundedOutlineBrush(FLinearColor(0.f, 0.f, 0.f, 0.f), FLinearColor(1.f, 0.45f, 0.12f, 0.78f), 1.5f, 0.f, true));
+		FrameBox->AddChild(CrosshairFrame);
+		if (UOverlaySlot* FS = CrosshairContainer->AddChildToOverlay(FrameBox))
+		{
+			FS->SetHorizontalAlignment(HAlign_Center);
+			FS->SetVerticalAlignment(VAlign_Center);
+		}
+
+		USizeBox* DotBox = WidgetTree->ConstructWidget<USizeBox>(USizeBox::StaticClass());
+		DotBox->SetWidthOverride(6.f);
+		DotBox->SetHeightOverride(6.f);
+		CrosshairDot = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass());
+		CrosshairDot->SetBrush(MakeRoundedOutlineBrush(FLinearColor(1.f, 1.f, 1.f, 0.94f), FLinearColor(0.f, 0.f, 0.f, 0.45f), 1.f, 0.f, true));
+		DotBox->AddChild(CrosshairDot);
+		if (UOverlaySlot* DS = CrosshairContainer->AddChildToOverlay(DotBox))
+		{
+			DS->SetHorizontalAlignment(HAlign_Center);
+			DS->SetVerticalAlignment(VAlign_Center);
+		}
+
+		if (UOverlaySlot* S = Root->AddChildToOverlay(CrosshairContainer))
 		{
 			S->SetHorizontalAlignment(HAlign_Center);
 			S->SetVerticalAlignment(VAlign_Center);
@@ -437,7 +562,7 @@ void UWizardHUDWidget::NativeOnInitialized()
 		HintPanel->SetPadding(FMargin(12.f, 8.f));
 
 		HintLabel = WidgetTree->ConstructWidget<UTextBlock>(UTextBlock::StaticClass());
-		HintLabel->SetText(FText::FromString(TEXT("ЛКМ — Каст / Заряд\n1–4 / Колесо — Стихия\nПКМ / Q — Рывок · Shift — Спринт\nR — Сброс арены · H — Подсказки")));
+		HintLabel->SetText(FText::FromString(TEXT("WASD — Движение · Пробел — Прыжок\nЛКМ — Каст / Заряд · 1–4 / Колесо — Стихия\nПКМ / Q — Рывок · Shift — Спринт\nR — Сброс арены · H — Подсказки")));
 		HintLabel->SetFont(MakeWizardFont(11, false));
 		HintLabel->SetColorAndOpacity(FSlateColor(FLinearColor(0.84f, 0.88f, 0.95f, 0.86f)));
 		HintPanel->AddChild(HintLabel);
@@ -538,10 +663,11 @@ void UWizardHUDWidget::NativeTick(const FGeometry& MyGeometry, float DeltaTime)
 {
 	Super::NativeTick(MyGeometry, DeltaTime);
 
+	float Charge = 0.f;
 	if (UWizardAbilityComponent* Ab = GetAbilities())
 	{
 		const int32 Sel = Ab->GetSelectedIndex();
-		const float Charge = Ab->GetChargeFraction();
+		Charge = Ab->GetChargeFraction();
 		for (int32 i = 0; i < Slots.Num(); ++i)
 		{
 			if (!Slots[i])
@@ -554,20 +680,34 @@ void UWizardHUDWidget::NativeTick(const FGeometry& MyGeometry, float DeltaTime)
 			Slots[i]->SetCooldown(Frac, Sec);
 			Slots[i]->SetCharge(i == Sel ? Charge : 0.f);
 		}
-		if (SpellNameLabel)
+		if (const USpellDataAsset* Sp = Ab->GetSelectedSpell())
 		{
-			if (const USpellDataAsset* Sp = Ab->GetSelectedSpell())
+			if (SpellNameLabel)
 			{
 				SpellNameLabel->SetText(Sp->DisplayName);
+			}
+			if (CrosshairFrame && !Sp->Color.Equals(CurrentCrosshairAccent, 0.005f))
+			{
+				CurrentCrosshairAccent = Sp->Color;
+				const FLinearColor RingColor(CurrentCrosshairAccent.R, CurrentCrosshairAccent.G, CurrentCrosshairAccent.B, 0.78f);
+				CrosshairFrame->SetBrush(MakeRoundedOutlineBrush(FLinearColor(0.f, 0.f, 0.f, 0.f), RingColor, 1.5f, 0.f, true));
 			}
 		}
 	}
 
-	if (CrosshairDot && CrosshairKick > 0.f)
+	if (CrosshairKick > 0.f)
 	{
 		CrosshairKick = FMath::Max(0.f, CrosshairKick - DeltaTime * 5.f);
-		const float S = 1.f + CrosshairKick * 0.9f;
-		CrosshairDot->SetRenderScale(FVector2D(S, S));
+	}
+	if (CrosshairDot)
+	{
+		const float DotScale = 1.f + CrosshairKick * 0.9f;
+		CrosshairDot->SetRenderScale(FVector2D(DotScale, DotScale));
+	}
+	if (CrosshairFrame)
+	{
+		const float FrameScale = 1.f + CrosshairKick * 0.45f - Charge * 0.18f;
+		CrosshairFrame->SetRenderScale(FVector2D(FrameScale, FrameScale));
 	}
 
 	if (TitleCard && TitleAge >= 0.f)

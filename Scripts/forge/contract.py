@@ -56,8 +56,8 @@ PATHS = {
 
 # ── Environment materials ─────────────────────────────────────────────────────
 ENV_MATERIALS = [
-    "M_Ground", "M_GrassBlade", "M_Foliage", "M_Bark", "M_Rock",
-    "M_Sandstone", "M_RuinStone", "M_Wood", "M_Crystal",
+    "M_Ground", "M_ArenaPlaza", "M_GrassBlade", "M_Foliage", "M_Bark", "M_Rock",
+    "M_Sandstone", "M_RuinStone", "M_Wood", "M_Crystal", "M_WizardStaff",
     "M_Piece_Stone", "M_Piece_Rock", "M_Piece_Wood", "M_Piece_Pottery",
 ]
 
@@ -168,9 +168,13 @@ DESTRUCTIBLE_SHAPES = [
 # (name, generator_func_key, params)
 ENV_MESHES = [
     # terrain bowl
-    ("SM_Terrain",    "terrain_bowl",  dict(radius=3600, subdivs=32)),
+    ("SM_Terrain",    "terrain_bowl",  dict(radius=3600, subdivs=64)),
     # cliff ring
     ("SM_CliffRing",  "cliff_ring",    dict(radius=3700, segments=24, height=600)),
+    # stepped circular central stone dais
+    ("SM_ArenaPlaza", "arena_plaza",   dict(radius=580)),
+    # carved wizard staff (~155 cm, fork cradle at Z=155 cm)
+    ("SM_WizardStaff","wizard_staff",  dict(height=155)),
     # grass blade (single instance mesh, scattered many times)
     ("SM_GrassBlade", "grass_blade",   dict(height=30, width=4)),
     # bush
@@ -204,10 +208,12 @@ STRUCTURE_PLACEMENTS = [
     *[("Wall_B", p) for p in _ring(4, 2600, 0, _math.pi / 6)],
     # pillars
     *[("Pillar_A", p) for p in _ring(8, 2200, 0, _math.pi / 8)],
-    # arches
-    *[("Arch_A", p) for p in _ring(3, 1800, 0, 0)],
-    # tower
-    ("Tower_A", (0, 2400, 0, 0)),
+    # grand hero arch on sightline + flanking side arches
+    ("Arch_A", (0, 850, 0, 0)),
+    ("Arch_A", (1800, 0, 0, 90)),
+    ("Arch_A", (-1800, 0, 0, 90)),
+    # hero watchtower framed through the grand arch
+    ("Tower_A", (0, 2200, 0, 0)),
     # big rocks
     ("BigRock_A", (1500, -800, 0, 30)),
     ("BigRock_A", (-1200, 1000, 0, 120)),
@@ -218,17 +224,36 @@ STRUCTURE_PLACEMENTS = [
 # Breakable props
 BREAKABLE_PLACEMENTS = {
     # def_name: list of (x,y,z,yaw)
-    "Pot_A":    _ring(10, 1600, 0, _math.pi / 10) + _ring(6, 800, 0, 0),
-    "Pot_B":    _ring(8, 1400, 0, _math.pi / 8),
-    "Crate_A":  _ring(6, 2000, 0, _math.pi / 12) + [(300, 400, 0, 45), (-300, -400, 0, 180)],
-    "Barrel_A": _ring(5, 1200, 0, 0) + [(500, -200, 0, 90)],
+    "Pot_A": (
+        [(-260, -160, 0, 15), (260, -160, 0, 165), (-180, 240, 0, 40), (180, 240, 0, 140),
+         (-110, 520, 0, 75), (110, 520, 0, 105)]
+        + _ring(10, 1600, 0, _math.pi / 10)
+    ),
+    "Pot_B": (
+        [(-310, -110, 0, 30), (310, -110, 0, 150), (-220, 300, 0, 60), (220, 300, 0, 120),
+         (0, 480, 0, 90)]
+        + _ring(8, 1400, 0, _math.pi / 8)
+    ),
+    "Crate_A": (
+        [(-340, 80, 0, 25), (340, 80, 0, 65), (-260, 440, 0, 15), (260, 440, 0, 110)]
+        + _ring(6, 2000, 0, _math.pi / 12)
+    ),
+    "Barrel_A": (
+        [(-280, 140, 0, 10), (280, 140, 0, 80), (-160, 380, 0, 45), (160, 380, 0, 135)]
+        + _ring(5, 1200, 0, 0)
+    ),
     "SmRock_A": _ring(8, 2500, 0, 0),
     "SmRock_B": _ring(6, 1800, 0, _math.pi / 6),
     "Tree_A":   _ring(8, 3000, 0, _math.pi / 8) + _ring(5, 2600, 0, 0),
 }
 
-# Crystal targets: 15 crystals
-CRYSTAL_PLACEMENTS = _ring(10, 2000, 0, 0) + _ring(5, 1000, 0, _math.pi / 5)
+# Crystal targets: 6 plaza sightline crystals + 9 outer ring crystals = 15 crystals
+CRYSTAL_PLACEMENTS = (
+    [(-440, -200, 0, 15), (440, -200, 0, 165),
+     (-440,  220, 0, 35), (440,  220, 0, 145),
+     (-320,  600, 0, 50), (320,  600, 0, 130)]
+    + _ring(9, 2000, 0, _math.pi / 9)
+)
 
 # Scatter layers: (mesh_name, placements_func)
 SCATTER_CONFIG = {

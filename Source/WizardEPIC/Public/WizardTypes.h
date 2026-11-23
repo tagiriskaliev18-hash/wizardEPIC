@@ -238,7 +238,7 @@ namespace WizardPaths
 	constexpr const TCHAR* ArenaLevel = TEXT("/Game/Wizard/Levels/L_Arena");
 
 	/** Animated third-person pawn from the engine's Third Person template (copied into Content/). */
-	constexpr const TCHAR* TemplatePawnClass = TEXT("/Game/ThirdPerson/Blueprints/BP_ThirdPersonCharacter.BP_ThirdPersonCharacter");
+	constexpr const TCHAR* TemplatePawnClass = TEXT("/Game/ThirdPerson/Blueprints/BP_ThirdPersonCharacter.BP_ThirdPersonCharacter_C");
 
 	/** Spell data assets in HUD-slot order. */
 	constexpr const TCHAR* Spells[] =

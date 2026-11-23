@@ -56,8 +56,36 @@ void UWizardSmokeTest::RequestShot(const FString& Name)
 {
 	const FString ShotPath = FPaths::ProjectSavedDir() / TEXT("Screenshots/Windows") / (Name + TEXT(".png"));
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(ShotPath), true);
-	FScreenshotRequest::RequestScreenshot(ShotPath, false, false);
-	Report(FString::Printf(TEXT("SHOT %s"), *Name));
+	FScreenshotRequest::RequestScreenshot(ShotPath, true, false);
+
+	UWorld* World = nullptr;
+	if (GEngine)
+	{
+		for (const FWorldContext& Ctx : GEngine->GetWorldContexts())
+		{
+			if (Ctx.WorldType == EWorldType::Game || Ctx.WorldType == EWorldType::PIE)
+			{
+				if (UWorld* Candidate = Ctx.World())
+				{
+					World = Candidate;
+					break;
+				}
+			}
+		}
+	}
+
+	APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+	APawn* Pawn = PC ? PC->GetPawn() : nullptr;
+	FVector CamLoc = FVector::ZeroVector;
+	FRotator CamRot = FRotator::ZeroRotator;
+	if (PC)
+	{
+		PC->GetPlayerViewPoint(CamLoc, CamRot);
+	}
+	const FString PawnName = Pawn ? Pawn->GetName() : TEXT("NONE");
+	const FString PawnLocStr = Pawn ? Pawn->GetActorLocation().ToCompactString() : TEXT("NONE");
+	Report(FString::Printf(TEXT("SHOT %s Pawn=%s Loc=%s CamLoc=%s CamRot=%s"),
+		*Name, *PawnName, *PawnLocStr, *CamLoc.ToCompactString(), *CamRot.ToCompactString()));
 }
 
 void UWizardSmokeTest::Report(const FString& Line)
@@ -154,27 +182,29 @@ void UWizardSmokeTest::RunBuiltIn()
 	struct FStepDef { float At; const TCHAR* Cmd; };
 	static const FStepDef Steps[] =
 	{
-		{ 0.2f,  TEXT("Shot 01_arena_start") },
-		{ 1.0f,  TEXT("AimNearest") },
-		{ 1.2f,  TEXT("Select 0") },
-		{ 1.4f,  TEXT("Cast 0 0.8") },
-		{ 2.6f,  TEXT("Shot 02_fire") },
-		{ 3.0f,  TEXT("AimNearest") },
-		{ 3.2f,  TEXT("Select 1") },
-		{ 3.4f,  TEXT("Cast 1 0.8") },
-		{ 4.8f,  TEXT("Shot 03_earth") },
-		{ 5.2f,  TEXT("AimNearest") },
-		{ 5.4f,  TEXT("Select 2") },
-		{ 5.6f,  TEXT("Cast 2 0.8") },
-		{ 6.6f,  TEXT("Shot 04_wind") },
-		{ 7.0f,  TEXT("AimNearest") },
-		{ 7.2f,  TEXT("Select 3") },
-		{ 7.4f,  TEXT("Cast 3 0.8") },
-		{ 8.8f,  TEXT("Shot 05_lightning") },
-		{ 9.4f,  TEXT("Stats") },
-		{ 10.0f, TEXT("Reset") },
-		{ 11.0f, TEXT("Shot 06_after_reset") },
-		{ 11.8f, TEXT("Quit") }
+		{ 0.10f, TEXT("Aim -8 90") },
+		{ 0.50f, TEXT("Shot 01_arena_start") },
+		{ 0.80f, TEXT("Move 1 0 0.7") },
+		{ 1.60f, TEXT("AimNearest") },
+		{ 1.70f, TEXT("Select 0") },
+		{ 1.80f, TEXT("Cast 0 0.9") },
+		{ 2.15f, TEXT("Shot 02_fire") },
+		{ 2.80f, TEXT("AimNearest") },
+		{ 2.90f, TEXT("Select 1") },
+		{ 3.00f, TEXT("Cast 1 0.9") },
+		{ 3.45f, TEXT("Shot 03_earth") },
+		{ 4.20f, TEXT("AimNearest") },
+		{ 4.30f, TEXT("Select 2") },
+		{ 4.40f, TEXT("Cast 2 0.9") },
+		{ 4.70f, TEXT("Shot 04_wind") },
+		{ 5.40f, TEXT("AimNearest") },
+		{ 5.50f, TEXT("Select 3") },
+		{ 5.60f, TEXT("Cast 3 0.9") },
+		{ 5.85f, TEXT("Shot 05_lightning") },
+		{ 6.70f, TEXT("Stats") },
+		{ 7.00f, TEXT("Reset") },
+		{ 7.70f, TEXT("Shot 06_after_reset") },
+		{ 8.30f, TEXT("Quit") }
 	};
 
 	const int32 NumSteps = UE_ARRAY_COUNT(Steps);
@@ -334,9 +364,35 @@ bool UWizardSmokeTest::AimAtNearestBreakable(UWorld* World, APawn* Pawn, UWizard
 	}
 
 	const FVector Origin = Pawn->GetActorLocation();
-	float BestDistSq = TNumericLimits<float>::Max();
-	FVector BestPoint = FVector::ZeroVector;
-	bool bFound = false;
+	constexpr float MinPreferredDistSq = 550.f * 550.f;
+
+	float BestPreferredDistSq = TNumericLimits<float>::Max();
+	FVector BestPreferredPoint = FVector::ZeroVector;
+	bool bFoundPreferred = false;
+
+	float BestFallbackDistSq = TNumericLimits<float>::Max();
+	FVector BestFallbackPoint = FVector::ZeroVector;
+	bool bFoundFallback = false;
+
+	auto ConsiderTarget = [&](const FVector& Target)
+	{
+		const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
+		if (DSq >= MinPreferredDistSq)
+		{
+			if (DSq < BestPreferredDistSq)
+			{
+				BestPreferredDistSq = DSq;
+				BestPreferredPoint = Target;
+				bFoundPreferred = true;
+			}
+		}
+		else if (DSq < BestFallbackDistSq)
+		{
+			BestFallbackDistSq = DSq;
+			BestFallbackPoint = Target;
+			bFoundFallback = true;
+		}
+	};
 
 	for (TActorIterator<AWizardBreakableBase> It(World); It; ++It)
 	{
@@ -358,14 +414,7 @@ bool UWizardSmokeTest::AimAtNearestBreakable(UWorld* World, APawn* Pawn, UWizard
 				FTransform InstT;
 				if (Set->GetInstanceTransform(i, InstT))
 				{
-					const FVector Target = InstT.GetLocation() + FVector(0.f, 0.f, 35.f);
-					const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
-					if (DSq < BestDistSq)
-					{
-						BestDistSq = DSq;
-						BestPoint = Target;
-						bFound = true;
-					}
+					ConsiderTarget(InstT.GetLocation() + FVector(0.f, 0.f, 35.f));
 				}
 			}
 		}
@@ -377,13 +426,7 @@ bool UWizardSmokeTest::AimAtNearestBreakable(UWorld* World, APawn* Pawn, UWizard
 				FVector PieceCentre;
 				if (Struct->IsPieceIntact(i) && Struct->GetPieceCentre(i, PieceCentre))
 				{
-					const float DSq = static_cast<float>(FVector::DistSquared(Origin, PieceCentre));
-					if (DSq < BestDistSq)
-					{
-						BestDistSq = DSq;
-						BestPoint = PieceCentre;
-						bFound = true;
-					}
+					ConsiderTarget(PieceCentre);
 				}
 			}
 		}
@@ -393,31 +436,23 @@ bool UWizardSmokeTest::AimAtNearestBreakable(UWorld* World, APawn* Pawn, UWizard
 			{
 				continue;
 			}
-			const FVector Target = Crystal->GetBreakableBounds().Origin;
-			const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
-			if (DSq < BestDistSq)
-			{
-				BestDistSq = DSq;
-				BestPoint = Target;
-				bFound = true;
-			}
+			ConsiderTarget(Crystal->GetBreakableBounds().Origin);
 		}
 		else
 		{
-			const FVector Target = Breakable->GetBreakableBounds().Origin;
-			const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
-			if (DSq < BestDistSq)
-			{
-				BestDistSq = DSq;
-				BestPoint = Target;
-				bFound = true;
-			}
+			ConsiderTarget(Breakable->GetBreakableBounds().Origin);
 		}
 	}
 
-	if (bFound)
+	if (bFoundPreferred)
 	{
-		Abilities->LookAt(BestPoint);
+		Abilities->LookAt(BestPreferredPoint);
+		return true;
 	}
-	return bFound;
+	if (bFoundFallback)
+	{
+		Abilities->LookAt(BestFallbackPoint);
+		return true;
+	}
+	return false;
 }

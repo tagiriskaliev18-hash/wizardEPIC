@@ -8,16 +8,24 @@ setlocal
 
 set "PROJECT_DIR=%~dp0"
 set "UPROJECT=%PROJECT_DIR%wizardEPIC.uproject"
-set "UE_EDITOR=C:\Program Files\Epic Games\UE_5.8\Engine\Binaries\Win64\UnrealEditor.exe"
-
-if not exist "%UE_EDITOR%" (
-    echo [ERROR] Unreal Editor not found at:
-    echo         %UE_EDITOR%
-    echo.
-    echo Make sure UE 5.8 is installed at the default location.
-    pause
-    exit /b 1
+set "UE_EDITOR="
+for %%D in (
+    "%USERPROFILE%\Epic Games\UE_5.8"
+    "C:\Program Files\Epic Games\UE_5.8"
+    "D:\Epic Games\UE_5.8"
+) do (
+    if exist "%%~D\Engine\Binaries\Win64\UnrealEditor.exe" (
+        set "UE_EDITOR=%%~D\Engine\Binaries\Win64\UnrealEditor.exe"
+        goto :found_ue
+    )
 )
+
+echo [ERROR] Unreal Editor 5.8 not found.
+echo         Checked %%USERPROFILE%%\Epic Games\UE_5.8 and C:\Program Files\Epic Games\UE_5.8.
+pause
+exit /b 1
+
+:found_ue
 
 if not exist "%UPROJECT%" (
     echo [ERROR] Project file not found: %UPROJECT%

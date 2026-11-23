@@ -373,6 +373,7 @@ UPointLightComponent* UWizardFXSubsystem::AcquirePoolLight()
 		UPointLightComponent* Light = State->FreeLights.Pop().Get();
 		if (Light && IsValid(Light))
 		{
+			Light->SetIntensityUnits(ELightUnits::Lumens);
 			Light->SetVisibility(true);
 			return Light;
 		}
@@ -391,7 +392,7 @@ UPointLightComponent* UWizardFXSubsystem::AcquirePoolLight()
 
 	UPointLightComponent* Light = NewObject<UPointLightComponent>(Host);
 	Light->SetupAttachment(Host->GetRootComponent());
-	Light->SetIntensityUnits(ELightUnits::Candelas);
+	Light->SetIntensityUnits(ELightUnits::Lumens);
 	Light->RegisterComponent();
 	LightPoolAll.Add(Light);
 	return Light;
@@ -470,14 +471,15 @@ void UWizardFXSubsystem::FFXRuntimeState::RebuildLightningBolt(UWizardFXSubsyste
 		MP.bCastShadow = false;
 		MP.bCollision = false;
 		MP.VectorParams.Add(TEXT("Tint"), P.Color);
-		MP.ScalarParams.Add(TEXT("EmissiveScale"), 60.f);
+		MP.ScalarParams.Add(TEXT("EmissiveScale"), 7.5f);
 		MP.ScalarParams.Add(TEXT("Fade"), 1.f);
 
 		const FRotator Rot = Delta.Rotation();
 		const FVector Mid = 0.5f * (A + B);
-		// SM_FX_Bolt is 1x1x1 unit box (or fallback Cube 100x100x100)
+		// Normalize any bolt mesh (100cm Forge OBJ or fallback 100cm Cube) to true 1cm unit scale
 		UStaticMesh* BoltMesh = Self->GetFXMesh(TEXT("SM_FX_Bolt"));
-		const float UnitScale = BoltMesh ? 1.f : 0.01f;
+		const float MeshSpanX = (BoltMesh && BoltMesh->GetBounds().BoxExtent.X > 0.01f) ? (BoltMesh->GetBounds().BoxExtent.X * 2.f) : 100.f;
+		const float UnitScale = 1.f / MeshSpanX;
 		MP.Transform = FTransform(Rot, Mid, FVector(Len * UnitScale, Width * UnitScale, Width * UnitScale));
 
 		if (UStaticMeshComponent* Comp = Self->SpawnMesh(MP))
@@ -999,6 +1001,8 @@ UStaticMeshComponent* UWizardFXSubsystem::SpawnMesh(const FFXMeshParams& Params)
 	if (Params.bCollision)
 	{
 		Comp->SetCollisionResponseToAllChannels(ECR_Block);
+		Comp->SetCollisionResponseToChannel(ECC_Camera, ECR_Ignore);
+		Comp->SetCollisionResponseToChannel(ECC_Pawn, ECR_Ignore);
 	}
 
 	if (Params.AttachTo.IsValid())
@@ -1052,10 +1056,12 @@ UPointLightComponent* UWizardFXSubsystem::SpawnLight(const FFXLightParams& Param
 		return nullptr;
 	}
 
+	const float SafePeakIntensity = (Params.Intensity > KINDA_SMALL_NUMBER) ? FMath::Clamp(Params.Intensity, 45.f, 160.f) : 0.f;
+	Light->SetIntensityUnits(ELightUnits::Lumens);
 	Light->SetLightColor(Params.Color);
 	Light->SetAttenuationRadius(Params.AttenuationRadius);
 	Light->SetCastShadows(Params.bCastShadows);
-	Light->SetIntensity(Params.AttackTime <= KINDA_SMALL_NUMBER ? Params.Intensity : 0.f);
+	Light->SetIntensity(Params.AttackTime <= KINDA_SMALL_NUMBER ? SafePeakIntensity : 0.f);
 
 	if (Params.AttachTo.IsValid())
 	{
@@ -1068,7 +1074,7 @@ UPointLightComponent* UWizardFXSubsystem::SpawnLight(const FFXLightParams& Param
 
 	FFXRuntimeState::FActiveLight Entry;
 	Entry.Comp = Light;
-	Entry.PeakIntensity = Params.Intensity;
+	Entry.PeakIntensity = SafePeakIntensity;
 	Entry.LifeTime = FMath::Max(0.05f, Params.LifeTime);
 	Entry.AttackTime = Params.AttackTime;
 	Entry.Flicker = Params.Flicker;

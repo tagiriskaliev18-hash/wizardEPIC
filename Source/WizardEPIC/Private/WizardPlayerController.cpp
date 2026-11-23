@@ -4,6 +4,7 @@
 #include "CameraFX.h"
 #include "Components/InputComponent.h"
 #include "Engine/World.h"
+#include "GameFramework/Character.h"
 #include "GameFramework/Pawn.h"
 #include "InputCoreTypes.h"
 #include "WizardAbilityComponent.h"
@@ -22,6 +23,8 @@ void AWizardPlayerController::BeginPlay()
 	if (PlayerCameraManager)
 	{
 		PlayerCameraManager->AddNewCameraModifier(UWizardCameraModifier::StaticClass());
+		PlayerCameraManager->ViewPitchMin = -55.f;
+		PlayerCameraManager->ViewPitchMax = 45.f;
 	}
 
 	bMouseCaptured = true;
@@ -34,6 +37,48 @@ void AWizardPlayerController::BeginPlay()
 	}
 }
 
+void AWizardPlayerController::PlayerTick(float DeltaTime)
+{
+	Super::PlayerTick(DeltaTime);
+
+	if (APawn* P = GetPawn())
+	{
+		float Forward = 0.f;
+		if (IsInputKeyDown(EKeys::W) || IsInputKeyDown(EKeys::Up))
+		{
+			Forward += 1.f;
+		}
+		if (IsInputKeyDown(EKeys::S) || IsInputKeyDown(EKeys::Down))
+		{
+			Forward -= 1.f;
+		}
+
+		float Right = 0.f;
+		if (IsInputKeyDown(EKeys::D) || IsInputKeyDown(EKeys::Right))
+		{
+			Right += 1.f;
+		}
+		if (IsInputKeyDown(EKeys::A) || IsInputKeyDown(EKeys::Left))
+		{
+			Right -= 1.f;
+		}
+
+		if (!FMath::IsNearlyZero(Forward) || !FMath::IsNearlyZero(Right))
+		{
+			const FRotator YawRot(0.f, GetControlRotation().Yaw, 0.f);
+			const FRotationMatrix RotMatrix(YawRot);
+			if (!FMath::IsNearlyZero(Forward))
+			{
+				P->AddMovementInput(RotMatrix.GetUnitAxis(EAxis::X), Forward);
+			}
+			if (!FMath::IsNearlyZero(Right))
+			{
+				P->AddMovementInput(RotMatrix.GetUnitAxis(EAxis::Y), Right);
+			}
+		}
+	}
+}
+
 void AWizardPlayerController::SetupInputComponent()
 {
 	Super::SetupInputComponent();
@@ -42,6 +87,12 @@ void AWizardPlayerController::SetupInputComponent()
 	{
 		return;
 	}
+
+	InputComponent->BindAxisKey(EKeys::MouseX, this, &AWizardPlayerController::OnLookYaw);
+	InputComponent->BindAxisKey(EKeys::MouseY, this, &AWizardPlayerController::OnLookPitch);
+
+	InputComponent->BindKey(EKeys::SpaceBar, IE_Pressed, this, &AWizardPlayerController::OnJumpPressed);
+	InputComponent->BindKey(EKeys::SpaceBar, IE_Released, this, &AWizardPlayerController::OnJumpReleased);
 
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Pressed, this, &AWizardPlayerController::OnCastPressed);
 	InputComponent->BindKey(EKeys::LeftMouseButton, IE_Released, this, &AWizardPlayerController::OnCastReleased);
@@ -82,6 +133,7 @@ void AWizardPlayerController::SetupInputComponent()
 	InputComponent->BindKey(EKeys::R, IE_Pressed, this, &AWizardPlayerController::OnResetPressed);
 	InputComponent->BindKey(EKeys::H, IE_Pressed, this, &AWizardPlayerController::OnHintsPressed);
 	InputComponent->BindKey(EKeys::Tab, IE_Pressed, this, &AWizardPlayerController::ToggleMouseCapture);
+	InputComponent->BindKey(EKeys::Escape, IE_Pressed, this, &AWizardPlayerController::OnEscapePressed);
 }
 
 bool AWizardPlayerController::GetAim(FVector& OutPoint, FVector& OutDirection, float MaxRange) const
@@ -212,5 +264,45 @@ void AWizardPlayerController::OnHintsPressed()
 	if (UWizardAbilityComponent* Ab = GetAbilities())
 	{
 		Ab->SetHintsVisible(!Ab->bHintsVisible);
+	}
+}
+
+void AWizardPlayerController::OnLookYaw(float Val)
+{
+	if (bMouseCaptured && !FMath::IsNearlyZero(Val))
+	{
+		AddYawInput(Val * 1.1f);
+	}
+}
+
+void AWizardPlayerController::OnLookPitch(float Val)
+{
+	if (bMouseCaptured && !FMath::IsNearlyZero(Val))
+	{
+		AddPitchInput(-Val * 1.1f);
+	}
+}
+
+void AWizardPlayerController::OnJumpPressed()
+{
+	if (ACharacter* Char = Cast<ACharacter>(GetPawn()))
+	{
+		Char->Jump();
+	}
+}
+
+void AWizardPlayerController::OnJumpReleased()
+{
+	if (ACharacter* Char = Cast<ACharacter>(GetPawn()))
+	{
+		Char->StopJumping();
+	}
+}
+
+void AWizardPlayerController::OnEscapePressed()
+{
+	if (bMouseCaptured)
+	{
+		ToggleMouseCapture();
 	}
 }

@@ -464,7 +464,7 @@ def _compute_smooth_normals(verts, faces):
     return [_normalize_v3(tuple(a)) for a in accum]
 
 
-def _box_project_uv(v, normal, scale=100.0):
+def _box_project_uv(v, normal, scale=160.0):
     """Triplanar/box UV projection from vertex position and face normal."""
     ax, ay, az = abs(normal[0]), abs(normal[1]), abs(normal[2])
     if az >= ax and az >= ay:
@@ -474,36 +474,143 @@ def _box_project_uv(v, normal, scale=100.0):
     return (v[0] / scale, v[2] / scale)
 
 
-def write_obj(path: Path, verts: list[tuple], faces: list[tuple], normals=None, uvs=None):
+def compute_box_uvs_and_normals(verts, faces, tile_cm=160.0, crease_deg=45.0):
+    """
+    Compute outward crease-aware vertex-corner normals and per-corner box-projected UVs.
+    Returns (corner_normals, corner_uvs), each a list aligned with `valid_faces`,
+    where entry[fi][ci] is the normal/UV for corner `ci` of face `fi`.
+    """
+    valid_faces = [fc for fc in faces if len(fc) >= 3]
+    face_normals = [_face_normal(verts, fc) for fc in valid_faces]
+
+    vert_adj = [[] for _ in verts]
+    for fi, fc in enumerate(valid_faces):
+        for vi in fc:
+            vert_adj[vi - 1].append(fi)
+
+    cos_thresh = math.cos(math.radians(crease_deg))
+    corner_normals = []
+    corner_uvs = []
+
+    for fi, fc in enumerate(valid_faces):
+        fn = face_normals[fi]
+        fn_list = []
+        uv_list = []
+        for vi in fc:
+            # Blend adjacent face normals within crease angle so curved lathes stay smooth
+            # while architectural corners stay crisp.
+            sx = sy = sz = 0.0
+            for fj in vert_adj[vi - 1]:
+                nj = face_normals[fj]
+                if fn[0] * nj[0] + fn[1] * nj[1] + fn[2] * nj[2] >= cos_thresh:
+                    sx += nj[0]
+                    sy += nj[1]
+                    sz += nj[2]
+            n_corner = _normalize_v3((sx, sy, sz)) if (sx or sy or sz) else fn
+            fn_list.append(n_corner)
+            uv_list.append(_box_project_uv(verts[vi - 1], fn, scale=tile_cm))
+        corner_normals.append(fn_list)
+        corner_uvs.append(uv_list)
+
+    return corner_normals, corner_uvs
+
+
+def write_obj(
+    path: Path,
+    verts: list[tuple],
+    faces: list[tuple],
+    normals=None,
+    uvs=None,
+    tile_cm: float = 160.0,
+):
     """Write an OBJ with guaranteed valid vertex normals (vn), UVs (vt), and v/vt/vn faces."""
     path.parent.mkdir(parents=True, exist_ok=True)
     valid_faces = [fc for fc in faces if len(fc) >= 3]
 
-    use_vertex_normals = normals is not None and len(normals) == len(verts)
-    use_vertex_uvs = uvs is not None and len(uvs) == len(verts)
+    per_vertex_normals = (
+        normals is not None
+        and len(normals) == len(verts)
+        and len(normals) > 0
+        and isinstance(normals[0][0], (int, float))
+    )
+    per_corner_normals = (
+        normals is not None
+        and len(normals) == len(valid_faces)
+        and len(normals) > 0
+        and isinstance(normals[0][0], (list, tuple))
+    )
+    per_face_normals = (
+        normals is not None
+        and not per_vertex_normals
+        and not per_corner_normals
+        and len(normals) == len(valid_faces)
+    )
 
-    out_normals = list(normals) if use_vertex_normals else []
-    out_uvs = list(uvs) if use_vertex_uvs else []
+    per_vertex_uvs = (
+        uvs is not None
+        and len(uvs) == len(verts)
+        and len(uvs) > 0
+        and isinstance(uvs[0][0], (int, float))
+    )
+    per_corner_uvs = (
+        uvs is not None
+        and len(uvs) == len(valid_faces)
+        and len(uvs) > 0
+        and isinstance(uvs[0][0], (list, tuple))
+    )
+
+    if not (per_vertex_normals or per_corner_normals or per_face_normals) or not (
+        per_vertex_uvs or per_corner_uvs
+    ):
+        auto_normals, auto_uvs = compute_box_uvs_and_normals(
+            verts, valid_faces, tile_cm=tile_cm
+        )
+    else:
+        auto_normals, auto_uvs = None, None
+
+    out_normals = list(normals) if per_vertex_normals else []
+    norm_dedup: dict[tuple[float, float, float], int] = {}
+    out_uvs = list(uvs) if per_vertex_uvs else []
+    uv_dedup: dict[tuple[float, float], int] = {}
     face_records = []
 
-    for face in valid_faces:
-        fn = _face_normal(verts, face)
-        if not use_vertex_normals:
-            vn_idx = len(out_normals) + 1
-            out_normals.append(fn)
-        else:
-            vn_idx = None
+    def _intern_normal(n: tuple[float, float, float]) -> int:
+        key = (round(n[0], 5), round(n[1], 5), round(n[2], 5))
+        idx = norm_dedup.get(key)
+        if idx is None:
+            out_normals.append(n)
+            idx = len(out_normals)
+            norm_dedup[key] = idx
+        return idx
 
+    def _intern_uv(uv: tuple[float, float]) -> int:
+        key = (round(uv[0], 5), round(uv[1], 5))
+        idx = uv_dedup.get(key)
+        if idx is None:
+            out_uvs.append(uv)
+            idx = len(out_uvs)
+            uv_dedup[key] = idx
+        return idx
+
+    for fi, face in enumerate(valid_faces):
         corners = []
-        for vi in face:
-            v_pos = verts[vi - 1]
-            n_idx = vi if use_vertex_normals else vn_idx
-            if use_vertex_uvs:
-                t_idx = vi
+        for ci, vi in enumerate(face):
+            if per_vertex_normals:
+                n_idx = vi
+            elif per_corner_normals:
+                n_idx = _intern_normal(normals[fi][ci])
+            elif per_face_normals:
+                n_idx = _intern_normal(normals[fi])
             else:
-                n_for_uv = out_normals[n_idx - 1]
-                out_uvs.append(_box_project_uv(v_pos, n_for_uv))
-                t_idx = len(out_uvs)
+                n_idx = _intern_normal(auto_normals[fi][ci])
+
+            if per_vertex_uvs:
+                t_idx = vi
+            elif per_corner_uvs:
+                t_idx = _intern_uv(uvs[fi][ci])
+            else:
+                t_idx = _intern_uv(auto_uvs[fi][ci])
+
             corners.append(f"{vi}/{t_idx}/{n_idx}")
         face_records.append("f " + " ".join(corners) + "\n")
 
@@ -512,9 +619,9 @@ def write_obj(path: Path, verts: list[tuple], faces: list[tuple], normals=None, 
         for v in verts:
             f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
         for uv in out_uvs:
-            f.write(f"vt {uv[0]:.4f} {uv[1]:.4f}\n")
+            f.write(f"vt {uv[0]:.5f} {uv[1]:.5f}\n")
         for n in out_normals:
-            f.write(f"vn {n[0]:.4f} {n[1]:.4f} {n[2]:.4f}\n")
+            f.write(f"vn {n[0]:.5f} {n[1]:.5f} {n[2]:.5f}\n")
         for line in face_records:
             f.write(line)
 
@@ -592,40 +699,68 @@ def gen_ring(outer=100, inner=75, segments=32):
     return verts, faces, None, None
 
 def gen_pillar(base_w=110, height=400, segments=8):
-    """Rock pillar, base centred at origin."""
+    """Rock pillar with seamless cylindrical UVs (ix/segments*2, t*3) and smooth unit normals."""
     rng = random.Random(777)
     verts = []
+    uvs = []
     faces = []
     rings = 6
+    stride = segments + 1
+
     for iy in range(rings + 1):
         t = iy / rings
-        y = t * height
-        r = base_w / 2 * (1.0 - t * 0.15)  # slight taper
-        for ix in range(segments):
-            a = 2 * math.pi * ix / segments
-            noise = rng.uniform(0.85, 1.15)
-            verts.append((r * math.cos(a) * noise, r * math.sin(a) * noise, y))
-    # Faces
+        z = t * height
+        r = base_w / 2.0 * (1.0 - t * 0.15)  # slight taper
+        ring_noises = [rng.uniform(0.85, 1.15) for _ in range(segments)]
+        for ix in range(stride):
+            a = 2.0 * math.pi * (ix % segments) / segments
+            noise = ring_noises[ix % segments]
+            verts.append((r * math.cos(a) * noise, r * math.sin(a) * noise, z))
+            uvs.append(((ix / segments) * 2.0, t * 3.0))
+
+    # Side faces
     for iy in range(rings):
         for ix in range(segments):
-            jx = (ix + 1) % segments
-            a = iy * segments + ix + 1
-            b = iy * segments + jx + 1
-            c = (iy + 1) * segments + jx + 1
-            d = (iy + 1) * segments + ix + 1
+            a = iy * stride + ix + 1
+            b = iy * stride + (ix + 1) + 1
+            c = (iy + 1) * stride + (ix + 1) + 1
+            d = (iy + 1) * stride + ix + 1
             faces.append((a, b, c, d))
-    # top cap
-    top_start = rings * segments
+
+    # Top cap (+Z outward)
+    top_start = rings * stride
     top_center = len(verts) + 1
-    cx, cy = 0, 0
+    cx = sum(verts[top_start + ix][0] for ix in range(segments)) / segments
+    cy = sum(verts[top_start + ix][1] for ix in range(segments)) / segments
+    verts.append((cx, cy, height))
+    uvs.append((1.0, 3.0))
     for ix in range(segments):
-        v = verts[top_start + ix]
-        cx += v[0]; cy += v[1]
-    verts.append((cx / segments, cy / segments, height))
+        faces.append((top_start + ix + 1, top_start + (ix + 1) + 1, top_center))
+
+    # Bottom cap (-Z outward)
+    bot_center = len(verts) + 1
+    bx = sum(verts[ix][0] for ix in range(segments)) / segments
+    by = sum(verts[ix][1] for ix in range(segments)) / segments
+    verts.append((bx, by, 0.0))
+    uvs.append((1.0, 0.0))
     for ix in range(segments):
-        jx = (ix + 1) % segments
-        faces.append((top_start + ix + 1, top_start + jx + 1, top_center))
-    return verts, faces, None, None
+        faces.append(((ix + 1) + 1, ix + 1, bot_center))
+
+    # Smooth unit normals with welded seam across ix=0 and ix=segments
+    normals = _compute_smooth_normals(verts, faces)
+    for iy in range(rings + 1):
+        i0 = iy * stride
+        i_end = i0 + segments
+        avg = _normalize_v3((
+            normals[i0][0] + normals[i_end][0],
+            normals[i0][1] + normals[i_end][1],
+            normals[i0][2] + normals[i_end][2],
+        ))
+        normals[i0] = avg
+        normals[i_end] = avg
+    normals[top_center - 1] = (0.0, 0.0, 1.0)
+    normals[bot_center - 1] = (0.0, 0.0, -1.0)
+    return verts, faces, normals, uvs
 
 def gen_bolt():
     """Unit box 1x1x1 centred at origin with outward winding."""
@@ -691,13 +826,22 @@ FX_MESH_GENERATORS = {
 # ── Environment mesh generators & terrain elevation ──────────────────────────
 
 def _build_structure_pads():
-    """Return list of (x, y, pad_radius, pad_z) for every placed structure."""
+    """Return list of (x, y, pad_radius, pad_z) for courtyard pads and every placed structure."""
     shape_map = {name: half_ext for name, _mat, half_ext, _np, _hp in C.DESTRUCTIBLE_SHAPES}
-    pads = []
+    z_courtyard = terrain_bowl_raw_z(0.0, 0.0)
+    pads = [
+        # Flat circular courtyard pads around player spawn (0, -900) and central plaza (0, 0)
+        (0.0, -900.0, 650.0, z_courtyard),
+        (0.0, 0.0, 650.0, z_courtyard),
+    ]
     for name, (sx, sy, _sz, _yaw) in C.STRUCTURE_PLACEMENTS:
         hx, hy, _hz = shape_map.get(name, (100.0, 100.0, 100.0))
-        r_pad = math.hypot(hx, hy) + 60.0
-        pads.append((sx, sy, r_pad, terrain_bowl_raw_z(sx, sy)))
+        if name == "Arch_A" and abs(sx) < 1e-3 and abs(sy - 850.0) < 1e-3:
+            # Keep hero arch aligned with the ceremonial courtyard elevation without touching r=580 dais
+            pads.append((sx, sy, 260.0, z_courtyard))
+        else:
+            r_pad = math.hypot(hx, hy) + 60.0
+            pads.append((sx, sy, r_pad, terrain_bowl_raw_z(sx, sy)))
     return pads
 
 
@@ -712,22 +856,34 @@ def terrain_bowl_raw_z(x, y, radius=C.BOWL_RADIUS):
 
 
 def terrain_bowl_z(x, y, radius=C.BOWL_RADIUS, pads=None):
-    """Bowl elevation with smooth flat pads under structure footprints."""
+    """Bowl elevation with smooth weighted flat pads under courtyard and structure footprints."""
     z = terrain_bowl_raw_z(x, y, radius)
     if pads is None:
         pads = _build_structure_pads()
     blend_margin = 180.0
+    w_sum = 0.0
+    wz_sum = 0.0
+    max_w = 0.0
     for sx, sy, r_pad, z_pad in pads:
         dist = math.hypot(x - sx, y - sy)
         if dist <= r_pad:
-            return z_pad
-        if dist < r_pad + blend_margin:
-            t = _smoothstep((dist - r_pad) / blend_margin)
-            z = _lerp(z_pad, z, t)
+            w = 1.0
+        elif dist < r_pad + blend_margin:
+            w = 1.0 - _smoothstep((dist - r_pad) / blend_margin)
+        else:
+            w = 0.0
+        if w > 0.0:
+            w_sum += w
+            wz_sum += w * z_pad
+            if w > max_w:
+                max_w = w
+    if w_sum > 0.0:
+        z_pad_avg = wz_sum / w_sum
+        z = _lerp(z, z_pad_avg, max_w)
     return z
 
 
-def make_terrain_sampler(verts, radius=3600, subdivs=32):
+def make_terrain_sampler(verts, radius=3600, subdivs=64):
     """Build exact bilinear/triangle sampler matching the generated SM_Terrain mesh."""
     stride = subdivs + 1
     cell = (2.0 * radius) / subdivs
@@ -748,8 +904,8 @@ def make_terrain_sampler(verts, radius=3600, subdivs=32):
     return sample
 
 
-def gen_terrain_bowl(radius=3600, subdivs=32):
-    """Concave bowl terrain mesh with flat structure pads and smooth normals."""
+def gen_terrain_bowl(radius=3600, subdivs=64):
+    """Concave bowl terrain mesh with flat courtyard/structure pads, smooth normals, and tiled UVs."""
     verts = []; faces = []; uvs = []
     pads = _build_structure_pads()
     for iy in range(subdivs + 1):
@@ -759,7 +915,7 @@ def gen_terrain_bowl(radius=3600, subdivs=32):
             y = (v_ - 0.5) * 2 * radius
             z = terrain_bowl_z(x, y, radius, pads)
             verts.append((x, y, z))
-            uvs.append((u, v_))
+            uvs.append((u * 22.0, v_ * 22.0))
     for iy in range(subdivs):
         for ix in range(subdivs):
             a = iy * (subdivs + 1) + ix + 1
@@ -770,118 +926,446 @@ def gen_terrain_bowl(radius=3600, subdivs=32):
     normals = _compute_smooth_normals(verts, faces)
     return verts, faces, normals, uvs
 
+
+# ── Shared procedural mesh builder (guaranteed outward winding) ───────────────
+
+def _rotate_euler(pt, yaw_deg=0.0, pitch_deg=0.0, roll_deg=0.0):
+    x, y, z = pt
+    if roll_deg:
+        r = math.radians(roll_deg)
+        cr, sr = math.cos(r), math.sin(r)
+        y, z = y * cr - z * sr, y * sr + z * cr
+    if pitch_deg:
+        p = math.radians(pitch_deg)
+        cp, sp = math.cos(p), math.sin(p)
+        x, z = x * cp + z * sp, -x * sp + z * cp
+    if yaw_deg:
+        yw = math.radians(yaw_deg)
+        cy, sy = math.cos(yw), math.sin(yw)
+        x, y = x * cy - y * sy, x * sy + y * cy
+    return (x, y, z)
+
+
+class _MeshBuilder:
+    """Clean solid/manifold mesh accumulator with outward winding."""
+
+    def __init__(self):
+        self.verts: list[tuple[float, float, float]] = []
+        self.faces: list[tuple[int, ...]] = []
+
+    def add_box(self, cx, cy, cz, hx, hy, hz, yaw=0.0, pitch=0.0, roll=0.0):
+        base = len(self.verts) + 1
+        local = [
+            (-hx, -hy, -hz), (hx, -hy, -hz), (hx, hy, -hz), (-hx, hy, -hz),
+            (-hx, -hy,  hz), (hx, -hy,  hz), (hx, hy,  hz), (-hx, hy,  hz),
+        ]
+        for pt in local:
+            rx, ry, rz = _rotate_euler(pt, yaw, pitch, roll)
+            self.verts.append((cx + rx, cy + ry, cz + rz))
+        self.faces.extend([
+            (base + 0, base + 3, base + 2, base + 1),  # -Z
+            (base + 4, base + 5, base + 6, base + 7),  # +Z
+            (base + 0, base + 1, base + 5, base + 4),  # -Y
+            (base + 1, base + 2, base + 6, base + 5),  # +X
+            (base + 2, base + 3, base + 7, base + 6),  # +Y
+            (base + 3, base + 0, base + 4, base + 7),  # -X
+        ])
+
+    def add_ring_stack(self, rings_xy, rings_z, cap_bottom=True, cap_top=True):
+        """Extrude stacked CCW 2D rings ordered bottom-to-top (increasing Z)."""
+        n = len(rings_xy[0])
+        ring_starts = []
+        for pts, z in zip(rings_xy, rings_z):
+            ring_starts.append(len(self.verts) + 1)
+            for x, y in pts:
+                self.verts.append((x, y, z))
+
+        for k in range(len(rings_xy) - 1):
+            r0 = ring_starts[k]
+            r1 = ring_starts[k + 1]
+            for ix in range(n):
+                jx = (ix + 1) % n
+                self.faces.append((r0 + ix, r0 + jx, r1 + jx, r1 + ix))
+
+        if cap_bottom:
+            bx = sum(p[0] for p in rings_xy[0]) / n
+            by = sum(p[1] for p in rings_xy[0]) / n
+            bc = len(self.verts) + 1
+            self.verts.append((bx, by, rings_z[0]))
+            r0 = ring_starts[0]
+            for ix in range(n):
+                jx = (ix + 1) % n
+                self.faces.append((r0 + jx, r0 + ix, bc))
+
+        if cap_top:
+            tx = sum(p[0] for p in rings_xy[-1]) / n
+            ty = sum(p[1] for p in rings_xy[-1]) / n
+            tc = len(self.verts) + 1
+            self.verts.append((tx, ty, rings_z[-1]))
+            rl = ring_starts[-1]
+            for ix in range(n):
+                jx = (ix + 1) % n
+                self.faces.append((rl + ix, rl + jx, tc))
+
+    def add_lathe(self, profile_rz, segments=14, cx=0.0, cy=0.0, z_offset=0.0):
+        """
+        Revolve (r, z) profile CCW around Z.
+        Supports r==0 start/end pole caps and hollow interior mouths without inverted normals.
+        """
+        if len(profile_rz) < 2:
+            return
+        start_pole = profile_rz[0][0] <= 1e-6
+        end_pole = profile_rz[-1][0] <= 1e-6
+        mid = profile_rz[1:-1] if (start_pole and end_pole) else (
+            profile_rz[1:] if start_pole else (profile_rz[:-1] if end_pole else profile_rz)
+        )
+        if not mid:
+            return
+
+        ring_starts = []
+        for r, z in mid:
+            ring_starts.append(len(self.verts) + 1)
+            for ix in range(segments):
+                a = 2.0 * math.pi * ix / segments
+                self.verts.append((cx + r * math.cos(a), cy + r * math.sin(a), z_offset + z))
+
+        for k in range(len(ring_starts) - 1):
+            r0 = ring_starts[k]
+            r1 = ring_starts[k + 1]
+            for ix in range(segments):
+                jx = (ix + 1) % segments
+                self.faces.append((r0 + ix, r0 + jx, r1 + jx, r1 + ix))
+
+        if start_pole:
+            c_bot = len(self.verts) + 1
+            self.verts.append((cx, cy, z_offset + profile_rz[0][1]))
+            r0 = ring_starts[0]
+            for ix in range(segments):
+                jx = (ix + 1) % segments
+                self.faces.append((r0 + jx, r0 + ix, c_bot))
+
+        if end_pole:
+            c_top = len(self.verts) + 1
+            self.verts.append((cx, cy, z_offset + profile_rz[-1][1]))
+            rl = ring_starts[-1]
+            for ix in range(segments):
+                jx = (ix + 1) % segments
+                self.faces.append((rl + ix, rl + jx, c_top))
+
+    def add_tube_ring(self, loop_rz, segments=16, cx=0.0, cy=0.0, z_offset=0.0):
+        """Revolve a closed CCW cross-section loop [(r,z), ...] around Z."""
+        m = len(loop_rz)
+        ring_starts = []
+        for r, z in loop_rz:
+            ring_starts.append(len(self.verts) + 1)
+            for ix in range(segments):
+                a = 2.0 * math.pi * ix / segments
+                self.verts.append((cx + r * math.cos(a), cy + r * math.sin(a), z_offset + z))
+        for k in range(m):
+            k2 = (k + 1) % m
+            r0 = ring_starts[k]
+            r1 = ring_starts[k2]
+            for ix in range(segments):
+                jx = (ix + 1) % segments
+                self.faces.append((r0 + ix, r0 + jx, r1 + jx, r1 + ix))
+
+    def add_deformed_sphere(
+        self, cx, cy, cz, rx, ry, rz, subdivisions=2, noise_fn=None, flatten_z_min=None
+    ):
+        unit_v, unit_f, _, _ = gen_icosphere(1.0, subdivisions)
+        base = len(self.verts)
+        for nx, ny, nz in unit_v:
+            scale = noise_fn(nx, ny, nz) if noise_fn else 1.0
+            vx = cx + nx * rx * scale
+            vy = cy + ny * ry * scale
+            vz = cz + nz * rz * scale
+            if flatten_z_min is not None and vz < flatten_z_min:
+                vz = flatten_z_min
+            self.verts.append((vx, vy, vz))
+        for a, b, c in unit_f:
+            self.faces.append((base + a, base + b, base + c))
+
+    def add_hex_crystal(
+        self, cx, cy, z0, radius, body_h, tip_h, tilt_deg=0.0, azimuth_deg=0.0, yaw_deg=0.0
+    ):
+        segs = 6
+        local_verts = []
+        for z in (0.0, body_h):
+            r_cur = radius * (0.86 if z > 0 else 1.0)
+            for ix in range(segs):
+                a = 2.0 * math.pi * ix / segs
+                local_verts.append((r_cur * math.cos(a), r_cur * math.sin(a), z))
+        local_verts.append((0.0, 0.0, body_h + tip_h))  # apex (index 12)
+        local_verts.append((0.0, 0.0, 0.0))             # bot center (index 13)
+
+        base = len(self.verts) + 1
+        for pt in local_verts:
+            p1 = _rotate_euler(pt, yaw_deg, tilt_deg, 0.0)
+            p2 = _rotate_euler(p1, azimuth_deg, 0.0, 0.0)
+            self.verts.append((cx + p2[0], cy + p2[1], z0 + p2[2]))
+
+        r0 = base
+        r1 = base + segs
+        apex = base + 2 * segs
+        bot_c = base + 2 * segs + 1
+        for ix in range(segs):
+            jx = (ix + 1) % segs
+            self.faces.append((r0 + ix, r0 + jx, r1 + jx, r1 + ix))
+            self.faces.append((r1 + ix, r1 + jx, apex))
+            self.faces.append((r0 + jx, r0 + ix, bot_c))
+
+    def add_arch_wedge(self, r_in, r_out, t0, t1, y_half, center_z):
+        """Closed 8-vertex voussoir wedge sweeping XZ angle [t0..t1] around (0, 0, center_z)."""
+        c0, s0 = math.cos(t0), math.sin(t0)
+        c1, s1 = math.cos(t1), math.sin(t1)
+        xz = [
+            (-r_in * c0, center_z + r_in * s0),
+            (-r_in * c1, center_z + r_in * s1),
+            (-r_out * c1, center_z + r_out * s1),
+            (-r_out * c0, center_z + r_out * s0),
+        ]
+        base = len(self.verts) + 1
+        for x, z in xz:
+            self.verts.append((x, -y_half, z))
+        for x, z in xz:
+            self.verts.append((x, y_half, z))
+        # front (-Y), back (+Y), inner arc, t1 cap, outer arc, t0 cap
+        self.faces.extend([
+            (base + 0, base + 1, base + 2, base + 3),
+            (base + 4, base + 7, base + 6, base + 5),
+            (base + 0, base + 4, base + 5, base + 1),
+            (base + 1, base + 5, base + 6, base + 2),
+            (base + 2, base + 6, base + 7, base + 3),
+            (base + 3, base + 7, base + 4, base + 0),
+        ])
+
+
 def gen_cliff_ring(radius=3700, segments=24, height=600):
-    """Ring of cliff geometry around the arena."""
+    """Closed craggy cliff rim encircling the arena (inward cliff faces visible from inside)."""
     rng = random.Random(999)
-    verts = []; faces = []
-    rings = 4
-    for iy in range(rings + 1):
-        t = iy / rings
-        z = t * height
+    b = _MeshBuilder()
+    # Closed cross-section profile around arena perimeter:
+    # inner toe -> craggy inner cliffs -> jagged crest -> outer slope -> outer toe
+    r_base_in = radius - 140.0
+    r_base_out = radius + 420.0
+    rings_xy = []
+    # Build per-segment perturbed rings for a solid closed cliff wall
+    profile_specs = [
+        (0.0, 0.0, 60.0),      # inner toe
+        (0.38, 0.35, 90.0),    # inner cliff mid
+        (0.85, 0.92, 110.0),   # inner crest lip
+        (1.30, 1.00, 115.0),   # ridge crest
+        (2.10, 0.55, 80.0),    # outer slope
+        (2.40, 0.0, 40.0),     # outer toe
+    ]
+    # Emit loop of rings in (r, z) per angle ix so inward face points toward (0,0)
+    m = len(profile_specs)
+    ring_starts = []
+    # Perturb per-angle height and radius deterministically
+    ang_h = [rng.uniform(0.80, 1.18) for _ in range(segments)]
+    ang_r = [rng.uniform(-70.0, 70.0) for _ in range(segments)]
+    for k, (r_frac, z_frac, jitter) in enumerate(profile_specs):
+        ring_starts.append(len(b.verts) + 1)
         for ix in range(segments):
-            a = 2 * math.pi * ix / segments
-            r = radius + rng.uniform(-80, 80) + t * 150
-            verts.append((r * math.cos(a), r * math.sin(a), z))
-    for iy in range(rings):
+            a = 2.0 * math.pi * ix / segments
+            r = _lerp(r_base_in, r_base_out, r_frac / 2.40) + ang_r[ix] + rng.uniform(-jitter * 0.3, jitter * 0.3)
+            z = z_frac * height * ang_h[ix] - (20.0 if z_frac == 0.0 else 0.0)
+            b.verts.append((r * math.cos(a), r * math.sin(a), z))
+
+    # Going CCW in (r, z) starting inner-toe -> inner-crest -> outer-crest -> outer-toe -> inner-toe
+    # Note: inner face goes UP (dz>0), so with outward radial=(+r), inner face needs (-r) -> reverse quad order!
+    for k in range(m):
+        k2 = (k + 1) % m
+        r0 = ring_starts[k]
+        r1 = ring_starts[k2]
         for ix in range(segments):
             jx = (ix + 1) % segments
-            a = iy * segments + ix + 1
-            b = iy * segments + jx + 1
-            c = (iy+1) * segments + jx + 1
-            d = (iy+1) * segments + ix + 1
-            faces.append((a, b, c, d))
-    return verts, faces, None, None
+            b.faces.append((r0 + jx, r0 + ix, r1 + ix, r1 + jx))
+    return b.verts, b.faces, None, None
+
+
+def gen_arena_plaza(radius=580):
+    """Stepped circular stone dais (r=580cm, two broad circular steps + inner carved ring)."""
+    b = _MeshBuilder()
+    segs = 32
+    # Step 1: r=580, z=0..14
+    b.add_lathe([(0.0, 0.0), (radius, 0.0), (radius, 14.0), (0.0, 14.0)], segments=segs)
+    # Step 2: r=450, z=14..28
+    r2 = radius * 0.776
+    b.add_lathe([(0.0, 14.0), (r2, 14.0), (r2, 28.0), (0.0, 28.0)], segments=segs)
+    # Central medallion slab: r=145, z=28..31
+    b.add_lathe([(0.0, 28.0), (145.0, 28.0), (145.0, 31.0), (0.0, 31.0)], segments=segs)
+    # Inner carved ring: r=195..250, z=28..34 (beveled top)
+    b.add_tube_ring(
+        [(195.0, 28.0), (250.0, 28.0), (244.0, 34.0), (201.0, 34.0)],
+        segments=segs,
+    )
+    # 8 carved radial spokes bridging inner ring to outer step
+    for i in range(8):
+        yaw = i * 45.0
+        rad = math.radians(yaw)
+        cx = 345.0 * math.cos(rad)
+        cy = 345.0 * math.sin(rad)
+        b.add_box(cx, cy, 30.0, 92.0, 18.0, 2.0, yaw=yaw)
+    return b.verts, b.faces, None, None
+
+
+def gen_wizard_staff(height=155):
+    """~155cm carved wooden staff centered at Z=0..155cm with flared fork head cradling StaffOrbMesh."""
+    b = _MeshBuilder()
+    segs = 12
+    # Bottom metal/wood ferrule (z=0..9)
+    b.add_lathe(
+        [(0.0, 0.0), (1.7, 0.0), (2.2, 4.0), (2.4, 9.0), (0.0, 9.0)],
+        segments=segs,
+    )
+    # Carved wooden shaft with subtle organic curve & collar bands (z=8..126)
+    n_rings = 14
+    rings_xy = []
+    rings_z = []
+    for iy in range(n_rings + 1):
+        t = iy / n_rings
+        z = 8.0 + t * (126.0 - 8.0)
+        bend_x = 1.4 * math.sin(t * math.pi)
+        r = 2.1 + 0.45 * t
+        # Decorative carved swells at grip and collars
+        if abs(t - 0.30) < 0.04 or abs(t - 0.68) < 0.04 or t > 0.94:
+            r += 0.45
+        pts = []
+        for ix in range(segs):
+            a = 2.0 * math.pi * ix / segs
+            pts.append((bend_x + r * math.cos(a), r * math.sin(a)))
+        rings_xy.append(pts)
+        rings_z.append(z)
+    b.add_ring_stack(rings_xy, rings_z, cap_bottom=True, cap_top=True)
+
+    # Flared neck collar & central orb seat (z=124..140)
+    b.add_lathe(
+        [(0.0, 124.0), (2.8, 124.0), (4.2, 131.0), (4.6, 136.0), (3.0, 140.0), (0.0, 138.0)],
+        segments=segs,
+    )
+
+    # Twin flared fork prongs around +-X cradling the orb at (0, 0, height=155)
+    for sign in (-1.0, 1.0):
+        prong_pts = [
+            (sign * 2.5, 132.0, 2.2),
+            (sign * 6.5, 138.0, 2.0),
+            (sign * 9.5, 146.0, 1.8),
+            (sign * 9.0, 153.5, 1.5),
+            (sign * 6.4, height + 4.0, 1.0),
+        ]
+        p_rings = []
+        p_zs = []
+        for px, pz, pr in prong_pts:
+            ring = []
+            for ix in range(8):
+                a = 2.0 * math.pi * ix / 8
+                ring.append((px + pr * math.cos(a), pr * 0.78 * math.sin(a)))
+            p_rings.append(ring)
+            p_zs.append(pz)
+        b.add_ring_stack(p_rings, p_zs, cap_bottom=True, cap_top=True)
+    return b.verts, b.faces, None, None
+
 
 def gen_grass_blade(height=30, width=4):
-    verts = [(0, 0, 0), (width, 0, 0), (width*0.6, 0, height*0.6), (width*0.2, 0, height)]
-    faces = [(1, 2, 3), (1, 3, 4)]
-    return verts, faces, None, None
+    """3-blade grass tuft with outward triangles and base-to-tip UV coords."""
+    b = _MeshBuilder()
+    blade_specs = [
+        (0.0, 0.0, 0.0, 1.0),
+        (1.8, -1.2, 115.0, 0.85),
+        (-1.6, 1.4, 235.0, 0.92),
+    ]
+    uvs = []
+    for ox, oy, yaw, sc in blade_specs:
+        h = height * sc
+        w = width * 0.5
+        pts = [
+            (-w, 0.0, 0.0), (w, 0.0, 0.0),
+            (w * 0.65, 2.0, h * 0.55), (-w * 0.65, 2.0, h * 0.55),
+            (0.0, 5.5, h),
+        ]
+        base = len(b.verts) + 1
+        for pt in pts:
+            rx, ry, rz = _rotate_euler(pt, yaw_deg=yaw)
+            b.verts.append((ox + rx, oy + ry, rz))
+        b.faces.extend([
+            (base + 0, base + 1, base + 2, base + 3),
+            (base + 3, base + 2, base + 4),
+        ])
+        uvs.extend([(0.0, 0.0), (1.0, 0.0), (0.85, 0.55), (0.15, 0.55), (0.5, 1.0)])
+    return b.verts, b.faces, None, uvs
+
 
 def gen_bush(radius=40, height=50):
-    """Simple bush as deformed sphere."""
-    verts = []; faces = []
+    """Multi-cluster organic bush with guaranteed outward winding."""
+    b = _MeshBuilder()
     rng = random.Random(1234)
-    segs = 8; rings_ = 5
-    for iy in range(rings_ + 1):
-        phi = math.pi * iy / rings_
-        for ix in range(segs):
-            theta = 2 * math.pi * ix / segs
-            r = radius * rng.uniform(0.7, 1.0)
-            x = r * math.sin(phi) * math.cos(theta)
-            y = r * math.sin(phi) * math.sin(theta)
-            z = height * math.cos(phi) * 0.5 + height * 0.5
-            verts.append((x, y, max(0, z)))
-    for iy in range(rings_):
-        for ix in range(segs):
-            jx = (ix + 1) % segs
-            a = iy * segs + ix + 1
-            b = iy * segs + jx + 1
-            c = (iy+1) * segs + jx + 1
-            d = (iy+1) * segs + ix + 1
-            faces.append((a, b, c, d))
-    return verts, faces, None, None
+    clusters = [
+        (0.0, 0.0, height * 0.48, radius * 0.85, radius * 0.85, height * 0.52),
+        (radius * 0.35, radius * 0.2, height * 0.36, radius * 0.58, radius * 0.55, height * 0.40),
+        (-radius * 0.32, -radius * 0.22, height * 0.38, radius * 0.56, radius * 0.54, height * 0.42),
+    ]
+    for idx, (cx, cy, cz, rx, ry, rz) in enumerate(clusters):
+        b.add_deformed_sphere(
+            cx, cy, cz, rx, ry, rz, subdivisions=1,
+            noise_fn=lambda x, y, z, s=idx: 0.80 + 0.35 * fbm_2d(x * 1.5 + s, y * 1.5 - z, 3, 2.2, seed=1234 + s),
+            flatten_z_min=0.0,
+        )
+    return b.verts, b.faces, None, None
+
 
 def gen_flower(height=25):
-    """Simple flower: stem + 5 petals."""
-    verts = [(0, 0, 0), (0, 0, height)]  # stem
-    # petals
-    n_pet = 5; pr = 8
+    """3D flower stem + 5 angled petals (outward normals)."""
+    b = _MeshBuilder()
+    # Tapered 4-sided stem
+    b.add_ring_stack(
+        [[(-0.8, -0.8), (0.8, -0.8), (0.8, 0.8), (-0.8, 0.8)],
+         [(-0.5, -0.5), (0.5, -0.5), (0.5, 0.5), (-0.5, 0.5)]],
+        [0.0, height],
+    )
+    # 5 angled petal quads around top
+    n_pet = 5
+    pr = 8.0
     for i in range(n_pet):
-        a = 2 * math.pi * i / n_pet
-        verts.append((pr * math.cos(a), pr * math.sin(a), height))
-        verts.append((pr * 0.5 * math.cos(a + 0.3), pr * 0.5 * math.sin(a + 0.3), height + 5))
-    faces = [(1, 2)]  # degenerate line for stem – skip
-    faces = []
-    for i in range(n_pet):
-        base = 3 + i * 2
-        faces.append((2, base, base + 1))
-    return verts, faces, None, None
+        a = 2.0 * math.pi * i / n_pet
+        cx = pr * 0.5 * math.cos(a)
+        cy = pr * 0.5 * math.sin(a)
+        b.add_box(cx, cy, height + 1.5, 4.2, 2.2, 0.6, yaw=math.degrees(a), pitch=-22.0)
+    return b.verts, b.faces, None, None
+
 
 def gen_small_stone(radius=12):
-    rng = random.Random(5678)
-    verts = []; faces = []
-    segs = 6; rings_ = 3
-    for iy in range(rings_ + 1):
-        phi = math.pi * iy / rings_
-        for ix in range(segs):
-            theta = 2 * math.pi * ix / segs
-            r = radius * rng.uniform(0.65, 1.0)
-            x = r * math.sin(phi) * math.cos(theta)
-            y = r * math.sin(phi) * math.sin(theta)
-            z = r * math.cos(phi) * 0.6
-            verts.append((x, y, z + radius * 0.3))
-    for iy in range(rings_):
-        for ix in range(segs):
-            jx = (ix + 1) % segs
-            a = iy * segs + ix + 1
-            b = iy * segs + jx + 1
-            c = (iy+1) * segs + jx + 1
-            d = (iy+1) * segs + ix + 1
-            faces.append((a, b, c, d))
-    return verts, faces, None, None
+    """Faceted small boulder stone with guaranteed outward winding and flat bottom."""
+    b = _MeshBuilder()
+    b.add_deformed_sphere(
+        0.0, 0.0, radius * 0.45, radius, radius * 0.88, radius * 0.68, subdivisions=1,
+        noise_fn=lambda x, y, z: 0.76 + 0.40 * fbm_2d(x * 1.7 + 0.5, y * 1.7 + z, 3, 2.5, seed=5678),
+        flatten_z_min=0.0,
+    )
+    return b.verts, b.faces, None, None
+
 
 def gen_ruin_column(radius=35, height=250):
-    verts = []; faces = []
-    segs = 10; rings_ = 5
-    rng = random.Random(321)
-    for iy in range(rings_ + 1):
-        t = iy / rings_
-        z = t * height
-        r = radius * (1.0 + 0.1 * math.cos(t * 6))
+    """Fluted ruined stone column with square plinth and closed ends."""
+    b = _MeshBuilder()
+    b.add_box(0.0, 0.0, 14.0, radius * 1.15, radius * 1.15, 14.0)
+    segs = 14
+    rings_xy = []
+    rings_z = []
+    for iy in range(7):
+        t = iy / 6.0
+        z = 28.0 + t * (height - 28.0)
+        r = radius * (1.0 - 0.10 * t)
+        pts = []
         for ix in range(segs):
-            a = 2 * math.pi * ix / segs
-            # fluted column
-            flute = 1.0 + 0.08 * math.cos(ix * 2 * math.pi / segs * 3)
-            verts.append((r * flute * math.cos(a), r * flute * math.sin(a), z))
-    for iy in range(rings_):
-        for ix in range(segs):
-            jx = (ix + 1) % segs
-            a = iy * segs + ix + 1
-            b = iy * segs + jx + 1
-            c = (iy+1) * segs + jx + 1
-            d = (iy+1) * segs + ix + 1
-            faces.append((a, b, c, d))
-    return verts, faces, None, None
+            a = 2.0 * math.pi * ix / segs
+            flute = 1.0 - 0.06 * (1.0 - math.cos(7.0 * a))
+            pts.append((r * flute * math.cos(a), r * flute * math.sin(a)))
+        rings_xy.append(pts)
+        rings_z.append(z)
+    b.add_ring_stack(rings_xy, rings_z, cap_bottom=True, cap_top=True)
+    return b.verts, b.faces, None, None
+
 
 def gen_ruin_wall(width=200, height=180, depth=30):
     """Closed broken wall section with front, back, side, top, and bottom faces."""
@@ -894,7 +1378,6 @@ def gen_ruin_wall(width=200, height=180, depth=30):
             u = ix / sx; v_ = iy / sy
             x = (u - 0.5) * width
             z = v_ * height
-            # broken top edge
             if iy == sy:
                 z *= rng.uniform(0.6, 1.0)
             y = -depth * 0.5 + (rng.uniform(-0.5, 0.5)) * depth * 0.1
@@ -906,7 +1389,6 @@ def gen_ruin_wall(width=200, height=180, depth=30):
             c = b + stride
             d = a + stride
             faces.append((a, b, c, d))  # front (-Y)
-    # back face (offset by depth)
     offset = len(verts)
     for v in verts[:offset]:
         verts.append((v[0], v[1] + depth, v[2]))
@@ -924,21 +1406,22 @@ def gen_ruin_wall(width=200, height=180, depth=30):
     def b_idx(iy, ix):
         return offset + iy * stride + ix + 1
 
-    # bottom (-Z) and top (+Z) faces
     for ix in range(sx):
         faces.append((f_idx(0, ix), b_idx(0, ix), b_idx(0, ix + 1), f_idx(0, ix + 1)))
         faces.append((f_idx(sy, ix), f_idx(sy, ix + 1), b_idx(sy, ix + 1), b_idx(sy, ix)))
 
-    # left (-X) and right (+X) side faces
     for iy in range(sy):
         faces.append((f_idx(iy, 0), f_idx(iy + 1, 0), b_idx(iy + 1, 0), b_idx(iy, 0)))
         faces.append((f_idx(iy, sx), b_idx(iy, sx), b_idx(iy + 1, sx), f_idx(iy + 1, sx)))
 
     return verts, faces, None, None
 
+
 ENV_MESH_GENERATORS = {
     "terrain_bowl": gen_terrain_bowl,
     "cliff_ring":   gen_cliff_ring,
+    "arena_plaza":  gen_arena_plaza,
+    "wizard_staff": gen_wizard_staff,
     "grass_blade":  gen_grass_blade,
     "bush":         gen_bush,
     "flower":       gen_flower,
@@ -946,6 +1429,373 @@ ENV_MESH_GENERATORS = {
     "ruin_column":  gen_ruin_column,
     "ruin_wall":    gen_ruin_wall,
 }
+
+# ── Sculpted Whole Destructible Meshes (base at Z=0 matching bbox bounds) ─────
+
+def gen_whole_pot(half_ext, wide=True):
+    """Lathe-turned amphora/urn (14-seg ring, footed base, curved belly, neck, rim)."""
+    hx, hy, hz = half_ext
+    rmax = min(hx, hy)
+    h = 2.0 * hz
+    if wide:
+        profile = [
+            (0.0, 0.0), (0.52 * rmax, 0.0), (0.58 * rmax, 0.08 * h), (0.48 * rmax, 0.16 * h),
+            (0.88 * rmax, 0.40 * h), (1.00 * rmax, 0.58 * h), (0.80 * rmax, 0.74 * h),
+            (0.46 * rmax, 0.85 * h), (0.60 * rmax, 0.94 * h), (0.62 * rmax, 1.00 * h),
+            (0.48 * rmax, 1.00 * h), (0.38 * rmax, 0.84 * h), (0.55 * rmax, 0.62 * h),
+            (0.0, 0.62 * h),
+        ]
+    else:
+        profile = [
+            (0.0, 0.0), (0.55 * rmax, 0.0), (0.62 * rmax, 0.08 * h), (0.46 * rmax, 0.18 * h),
+            (0.92 * rmax, 0.45 * h), (1.00 * rmax, 0.64 * h), (0.74 * rmax, 0.79 * h),
+            (0.46 * rmax, 0.88 * h), (0.64 * rmax, 0.95 * h), (0.66 * rmax, 1.00 * h),
+            (0.50 * rmax, 1.00 * h), (0.38 * rmax, 0.87 * h), (0.55 * rmax, 0.66 * h),
+            (0.0, 0.66 * h),
+        ]
+    b = _MeshBuilder()
+    b.add_lathe(profile, segments=14)
+    return b.verts, b.faces
+
+
+def gen_whole_barrel(half_ext):
+    """Bulged 14-seg wooden barrel with recessed lids and 4 raised hoop bands."""
+    hx, hy, hz = half_ext
+    rmax = min(hx, hy)
+    h = 2.0 * hz
+    r_end = rmax * 0.78
+    r_belly = rmax * 0.95
+    b = _MeshBuilder()
+    profile = [
+        (0.0, 0.04 * h), (r_end * 0.92, 0.04 * h), (r_end * 0.96, 0.0), (r_end, 0.0),
+        (0.88 * rmax, 0.20 * h), (r_belly, 0.50 * h), (0.88 * rmax, 0.80 * h),
+        (r_end, h), (r_end * 0.96, h), (r_end * 0.92, 0.96 * h), (0.0, 0.96 * h),
+    ]
+    b.add_lathe(profile, segments=14)
+    # 4 raised iron/wood hoop bands
+    for t_lo, t_hi, r_frac in [
+        (0.10, 0.15, 0.86),
+        (0.30, 0.35, 0.94),
+        (0.65, 0.70, 0.94),
+        (0.85, 0.90, 0.86),
+    ]:
+        r_in = rmax * (r_frac - 0.02)
+        r_out = rmax * (r_frac + 0.05)
+        b.add_tube_ring(
+            [(r_in, t_lo * h), (r_out, t_lo * h), (r_out, t_hi * h), (r_in, t_hi * h)],
+            segments=14,
+        )
+    return b.verts, b.faces
+
+
+def gen_whole_crate(half_ext):
+    """Wooden frame crate with recessed side panels, corner posts, and diagonal braces."""
+    hx, hy, hz = half_ext
+    h = 2.0 * hz
+    b = _MeshBuilder()
+    # Recessed inner wooden box
+    b.add_box(0.0, 0.0, hz, hx * 0.87, hy * 0.87, hz * 0.92)
+    # 4 corner posts
+    pw = max(4.0, min(hx, hy) * 0.125)
+    for sx in (-1.0, 1.0):
+        for sy in (-1.0, 1.0):
+            b.add_box(sx * (hx - pw), sy * (hy - pw), hz, pw, pw, hz)
+    # Top & bottom horizontal perimeter rails
+    rail_h = pw
+    for zc in (rail_h, h - rail_h):
+        for sy in (-1.0, 1.0):
+            b.add_box(0.0, sy * (hy - pw * 0.7), zc, hx - 2 * pw, pw * 0.7, rail_h)
+        for sx in (-1.0, 1.0):
+            b.add_box(sx * (hx - pw * 0.7), 0.0, zc, pw * 0.7, hy - 2 * pw, rail_h)
+    # Diagonal cross braces on the 4 faces
+    diag_len = math.hypot(hx - 2 * pw, hz - 2 * rail_h) * 0.92
+    ang = math.degrees(math.atan2(hz - 2 * rail_h, hx - 2 * pw))
+    for sy in (-1.0, 1.0):
+        b.add_box(0.0, sy * (hy - pw * 0.8), hz, diag_len, pw * 0.35, pw * 0.7, pitch=ang)
+    for sx in (-1.0, 1.0):
+        b.add_box(sx * (hx - pw * 0.8), 0.0, hz, pw * 0.35, diag_len, pw * 0.7, roll=ang)
+    return b.verts, b.faces
+
+
+def gen_whole_pillar(half_ext):
+    """Fluted temple column with square plinth, torus base, fluted shaft, and stepped capital."""
+    hx, hy, hz = half_ext
+    r = min(hx, hy)
+    h = 2.0 * hz
+    b = _MeshBuilder()
+    # Square plinth base
+    plinth_h = h * 0.08
+    b.add_box(0.0, 0.0, plinth_h * 0.5, hx, hy, plinth_h * 0.5)
+    # Molded torus base
+    b.add_lathe(
+        [(0.0, plinth_h), (r * 0.92, plinth_h), (r * 0.92, plinth_h + h * 0.025),
+         (r * 0.78, plinth_h + h * 0.05), (0.0, plinth_h + h * 0.05)],
+        segments=20,
+    )
+    # Fluted cylindrical shaft
+    z_bot = plinth_h + h * 0.045
+    z_top = h * 0.88
+    segs = 24
+    rings_xy = []
+    rings_z = []
+    for iy in range(9):
+        t = iy / 8.0
+        z = _lerp(z_bot, z_top, t)
+        r_shaft = r * (0.76 - 0.10 * t)
+        pts = []
+        for ix in range(segs):
+            a = 2.0 * math.pi * ix / segs
+            flute = 1.0 - 0.055 * (1.0 - math.cos(12.0 * a))
+            pts.append((r_shaft * flute * math.cos(a), r_shaft * flute * math.sin(a)))
+        rings_xy.append(pts)
+        rings_z.append(z)
+    b.add_ring_stack(rings_xy, rings_z, cap_bottom=True, cap_top=True)
+    # Stepped echinus capital
+    b.add_lathe(
+        [(0.0, z_top), (r * 0.68, z_top), (r * 0.84, z_top + h * 0.025),
+         (r * 0.94, z_top + h * 0.055), (0.0, z_top + h * 0.055)],
+        segments=20,
+    )
+    # Square abacus cap
+    cap_z0 = z_top + h * 0.055
+    cap_hz = (h - cap_z0) * 0.5
+    b.add_box(0.0, 0.0, cap_z0 + cap_hz, hx * 0.96, hy * 0.96, cap_hz)
+    return b.verts, b.faces
+
+
+def gen_whole_arch(half_ext):
+    """True open stone archway: left & right piers + semicircular arch voussoirs + top entablature."""
+    hx, hy, hz = half_ext
+    h = 2.0 * hz
+    b = _MeshBuilder()
+    r_in = hx * 0.56          # 140 cm clear half-width -> 280 cm open passage
+    pier_z_top = h * 0.567    # 340 cm impost height
+    pier_cx = 0.5 * (r_in + hx)
+    pier_hx = 0.5 * (hx - r_in)
+
+    # Left & right piers (stepped plinth, shaft, impost capital)
+    for sign in (-1.0, 1.0):
+        px = sign * pier_cx
+        b.add_box(px, 0.0, 22.0, pier_hx, hy, 22.0)
+        b.add_box(px, 0.0, 177.0, pier_hx * 0.88, hy * 0.88, 133.0)
+        b.add_box(px, 0.0, pier_z_top - 15.0, pier_hx * 1.02, hy, 15.0)
+
+    # Semicircular stone voussoir arch (12 stone wedges)
+    r_out = hx * 0.84         # 210 cm outer radius (340 + 210 = 550 cm)
+    n_wedges = 12
+    for i in range(n_wedges):
+        t0 = math.pi * i / n_wedges
+        t1 = math.pi * (i + 1) / n_wedges
+        b.add_arch_wedge(r_in, r_out, t0, t1, hy * 0.88, pier_z_top)
+
+    # Keystone crown accent
+    b.add_box(0.0, 0.0, pier_z_top + 0.5 * (r_in + r_out), 24.0, hy, 0.5 * (r_out - r_in) + 12.0)
+
+    # Spandrel masonry blocks linking outer piers to entablature
+    entab_z0 = pier_z_top + r_out - 12.0  # ~538 cm
+    for sign in (-1.0, 1.0):
+        b.add_box(sign * (hx * 0.86), 0.0, 0.5 * (pier_z_top + entab_z0), hx * 0.13, hy * 0.80, 0.5 * (entab_z0 - pier_z_top))
+        b.add_box(sign * (hx * 0.62), 0.0, entab_z0 - 24.0, hx * 0.16, hy * 0.80, 24.0)
+
+    # Top entablature (architrave + projecting cornice up to 2*hz=600)
+    arch_mid = 0.5 * (entab_z0 + (h - 24.0))
+    b.add_box(0.0, 0.0, arch_mid, hx * 0.98, hy * 0.92, (h - 24.0 - entab_z0) * 0.5)
+    b.add_box(0.0, 0.0, h - 12.0, hx, hy, 12.0)
+    return b.verts, b.faces
+
+
+def gen_whole_tower(half_ext):
+    """Multi-tier watchtower: battered plinth + octagonal shaft + corbel collar + crenellated battlements."""
+    hx, hy, hz = half_ext
+    r = min(hx, hy)
+    h = 2.0 * hz
+    b = _MeshBuilder()
+    segs = 8
+
+    def _oct_ring(rad):
+        return [(rad * math.cos(2 * math.pi * i / segs + math.pi / segs),
+                 rad * math.sin(2 * math.pi * i / segs + math.pi / segs)) for i in range(segs)]
+
+    # Battered plinth + lower & upper octagonal shaft + mid-belt + corbel collar
+    tier_specs = [
+        (r * 1.02, 0.0),
+        (r * 0.82, 0.16 * h),
+        (r * 0.78, 0.46 * h),
+        (r * 0.84, 0.47 * h),
+        (r * 0.84, 0.50 * h),
+        (r * 0.78, 0.51 * h),
+        (r * 0.73, 0.76 * h),
+        (r * 0.84, 0.80 * h),
+        (r * 0.96, 0.84 * h),
+    ]
+    b.add_ring_stack([_oct_ring(rad) for rad, _ in tier_specs], [z for _, z in tier_specs], cap_bottom=True, cap_top=True)
+
+    # Battlement parapet ring (hollow octagonal collar z=0.84*h .. 0.92*h)
+    parapet_z0 = 0.84 * h
+    parapet_z1 = 0.92 * h
+    b.add_tube_ring(
+        [(r * 0.70, parapet_z0), (r * 0.96, parapet_z0), (r * 0.96, parapet_z1), (r * 0.70, parapet_z1)],
+        segments=segs,
+    )
+
+    # 8 crenellated merlons around the top rim (z=0.92*h .. 1.00*h)
+    merlon_h = (h - parapet_z1) * 0.5
+    merlon_cz = parapet_z1 + merlon_h
+    for i in range(segs):
+        yaw = i * (360.0 / segs) + (180.0 / segs)
+        rad_a = math.radians(yaw)
+        mr = r * 0.83
+        b.add_box(mr * math.cos(rad_a), mr * math.sin(rad_a), merlon_cz, r * 0.13, r * 0.24, merlon_h, yaw=yaw)
+    return b.verts, b.faces
+
+
+def gen_whole_wall(half_ext, seed=101):
+    """Castle stone wall with stepped base, main ashlar face, cornice, and broken crenellations."""
+    hx, hy, hz = half_ext
+    h = 2.0 * hz
+    rng = random.Random(seed)
+    b = _MeshBuilder()
+    # Stepped plinth base
+    b.add_box(0.0, 0.0, 0.07 * h, hx, hy, 0.07 * h)
+    # Main ashlar body
+    b.add_box(0.0, 0.0, 0.47 * h, hx * 0.97, hy * 0.80, 0.33 * h)
+    # Projecting cornice
+    b.add_box(0.0, 0.0, 0.825 * h, hx * 0.99, hy * 0.94, 0.025 * h)
+    # Broken crenellated merlons across top
+    n_merlons = 4 if hx <= 220 else 6
+    span = hx * 1.90
+    step = span / n_merlons
+    merlon_w = step * 0.34
+    base_z = 0.85 * h
+    for i in range(n_merlons):
+        cx = -0.95 * hx + step * (i + 0.5)
+        # Deterministically chip one or two merlons for ruined silhouette
+        scale_h = 0.45 if (i == 1 or (n_merlons > 4 and i == 4)) else rng.uniform(0.85, 1.0)
+        mh = (h - base_z) * 0.5 * scale_h
+        b.add_box(cx, 0.0, base_z + mh, merlon_w, hy * 0.82, mh)
+    return b.verts, b.faces
+
+
+def gen_whole_rock(half_ext, seed=202, subdivisions=2):
+    """Faceted multi-octave displaced boulder with flattened seat at Z=0."""
+    hx, hy, hz = half_ext
+    b = _MeshBuilder()
+    b.add_deformed_sphere(
+        0.0, 0.0, hz * 0.85, hx * 0.92, hy * 0.92, hz * 0.96,
+        subdivisions=subdivisions,
+        noise_fn=lambda x, y, z: min(
+            1.05,
+            0.70
+            + 0.30 * fbm_2d(x * 1.6 + 1.3, y * 1.6 + z * 1.1, 4, 2.4, seed=seed)
+            + 0.12 * abs(math.sin(x * 3.1 + z * 2.7)),
+        ),
+        flatten_z_min=0.0,
+    )
+    return b.verts, b.faces
+
+
+def gen_whole_tree(half_ext):
+    """Tapered trunk with root flare + 3 layered irregular canopy clusters."""
+    hx, hy, hz = half_ext
+    h = 2.0 * hz
+    b = _MeshBuilder()
+    # Tapered trunk (z=0..0.60*h)
+    segs = 8
+    rings_xy = []
+    rings_z = []
+    trunk_specs = [
+        (0.0, 22.0, 0.0, 0.0),
+        (0.08 * h, 14.5, 1.5, -1.0),
+        (0.32 * h, 11.5, -2.5, 2.0),
+        (0.58 * h, 7.5, 1.0, 1.5),
+    ]
+    for z, rad, ox, oy in trunk_specs:
+        pts = [(ox + rad * math.cos(2 * math.pi * i / segs),
+                oy + rad * math.sin(2 * math.pi * i / segs)) for i in range(segs)]
+        rings_xy.append(pts)
+        rings_z.append(z)
+    b.add_ring_stack(rings_xy, rings_z, cap_bottom=True, cap_top=True)
+
+    # 3 layered irregular foliage canopy clusters
+    canopy_tiers = [
+        (8.0, -6.0, 0.54 * h, hx * 0.96, hy * 0.92, 0.15 * h, 901),
+        (-9.0, 8.0, 0.72 * h, hx * 0.84, hy * 0.82, 0.14 * h, 902),
+        (3.0, 2.0, 0.88 * h, hx * 0.64, hy * 0.62, 0.12 * h, 903),
+    ]
+    for cx, cy, cz, rx, ry, rz, s in canopy_tiers:
+        b.add_deformed_sphere(
+            cx, cy, cz, rx, ry, rz, subdivisions=2,
+            noise_fn=lambda x, y, z, sd=s: 0.78 + 0.34 * fbm_2d(x * 1.4 + sd, y * 1.4 - z, 3, 2.2, seed=sd),
+        )
+    return b.verts, b.faces
+
+
+def gen_whole_crystal(half_ext):
+    """Central tall hexagonal crystal spire + 3 angled side crystal shards."""
+    hx, hy, hz = half_ext
+    r = min(hx, hy)
+    h = 2.0 * hz
+    b = _MeshBuilder()
+    # Central spire
+    b.add_hex_crystal(0.0, 0.0, 0.0, radius=r * 0.52, body_h=h * 0.75, tip_h=h * 0.25)
+    # 3 angled side crystal shards (seated slightly above Z=0 so tilted bases stay >= 0)
+    shards = [
+        (15.0,  22.0, r * 0.32, h * 0.45, h * 0.16),
+        (135.0, 26.0, r * 0.28, h * 0.38, h * 0.15),
+        (255.0, 20.0, r * 0.34, h * 0.48, h * 0.17),
+    ]
+    for az, tilt, sr, bh, th in shards:
+        rad_a = math.radians(az)
+        b.add_hex_crystal(
+            r * 0.24 * math.cos(rad_a),
+            r * 0.24 * math.sin(rad_a),
+            3.5,
+            radius=sr,
+            body_h=bh,
+            tip_h=th,
+            tilt_deg=tilt,
+            azimuth_deg=az,
+            yaw_deg=az * 0.5,
+        )
+    return b.verts, b.faces
+
+
+def gen_whole_mesh(shape_name: str, half_ext: tuple):
+    """Dispatch sculpted Whole mesh matching shape bbox with base at Z=0."""
+    if shape_name == "Pot_A":
+        return gen_whole_pot(half_ext, wide=True)
+    if shape_name == "Pot_B":
+        return gen_whole_pot(half_ext, wide=False)
+    if shape_name == "Barrel_A":
+        return gen_whole_barrel(half_ext)
+    if shape_name == "Crate_A":
+        return gen_whole_crate(half_ext)
+    if shape_name == "Pillar_A":
+        return gen_whole_pillar(half_ext)
+    if shape_name == "Arch_A":
+        return gen_whole_arch(half_ext)
+    if shape_name == "Tower_A":
+        return gen_whole_tower(half_ext)
+    if shape_name == "Wall_A":
+        return gen_whole_wall(half_ext, seed=101)
+    if shape_name == "Wall_B":
+        return gen_whole_wall(half_ext, seed=102)
+    if shape_name == "BigRock_A":
+        return gen_whole_rock(half_ext, seed=201, subdivisions=2)
+    if shape_name == "BigRock_B":
+        return gen_whole_rock(half_ext, seed=202, subdivisions=2)
+    if shape_name == "SmRock_A":
+        return gen_whole_rock(half_ext, seed=203, subdivisions=1)
+    if shape_name == "SmRock_B":
+        return gen_whole_rock(half_ext, seed=204, subdivisions=1)
+    if shape_name == "Tree_A":
+        return gen_whole_tree(half_ext)
+    if shape_name == "Crystal_A":
+        return gen_whole_crystal(half_ext)
+
+    b = _MeshBuilder()
+    b.add_box(0.0, 0.0, half_ext[2], *half_ext)
+    return b.verts, b.faces
 
 # ═══════════════════════════════════════════════════════════════════════════════
 # Voronoi fracture (simple convex decomposition)
@@ -1342,7 +2192,7 @@ def main():
             terrain_sampler = make_terrain_sampler(
                 verts,
                 radius=params.get("radius", C.BOWL_RADIUS),
-                subdivs=params.get("subdivs", 32),
+                subdivs=params.get("subdivs", 64),
             )
         write_obj(path, verts, faces, normals, uvs)
         print(f"  {name}: {len(verts)} verts, {len(faces)} faces -> {path.name}")
@@ -1351,6 +2201,22 @@ def main():
     def _ground_z(x, y, base_z=0.0):
         return round(terrain_sampler(x, y) + base_z, 3) if terrain_sampler else base_z
 
+    def _plaza_surface_z(x, y, base_z=0.0):
+        """Return terrain Z + stepped SM_ArenaPlaza top elevation when standing on the dais."""
+        r = math.hypot(x, y)
+        dais_h = 0.0
+        if r <= 145.0:
+            dais_h = 31.0
+        elif r <= 195.0:
+            dais_h = 28.0
+        elif r <= 250.0:
+            dais_h = 34.0
+        elif r <= 450.0:
+            dais_h = 28.0
+        elif r <= 580.0:
+            dais_h = 14.0
+        return _ground_z(x, y, base_z + dais_h)
+
     # 6. Destructible fracture pieces
     print("=== Destructible Fracture ===")
     destruction_data = {}
@@ -1358,18 +2224,12 @@ def main():
         shape_dir = dest_dir / shape_name
         shape_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate whole mesh with base at Z=0 (Z in [0, 2*hz]) and outward winding
-        hx, hy, hz = half_ext
-        whole_verts = [
-            (-hx, -hy, 0), (hx, -hy, 0), (hx, hy, 0), (-hx, hy, 0),
-            (-hx, -hy, 2*hz), (hx, -hy, 2*hz), (hx, hy, 2*hz), (-hx, hy, 2*hz),
-        ]
-        whole_faces = [
-            (1, 4, 3, 2), (5, 6, 7, 8), (1, 2, 6, 5), (2, 3, 7, 6), (3, 4, 8, 7), (4, 1, 5, 8),
-        ]
+        # Generate sculpted Whole mesh with base at Z=0 matching bbox bounds
+        whole_verts, whole_faces = gen_whole_mesh(shape_name, half_ext)
         write_obj(shape_dir / f"SM_{shape_name}_Whole.obj", whole_verts, whole_faces)
 
-        pieces = voronoi_fracture_box(shape_name, half_ext, n_pieces, seed=hash(shape_name) & 0xFFFF)
+        seed = zlib.crc32(shape_name.encode("utf-8")) & 0xFFFF
+        pieces = voronoi_fracture_box(shape_name, half_ext, n_pieces, seed=seed)
 
         piece_data = []
         for idx, piece in enumerate(pieces):
@@ -1395,7 +2255,7 @@ def main():
             "score_per_piece": 10,
             "collapse_bonus": 100 if n_pieces >= 8 else 50,
         }
-        print(f"  {shape_name}: {len(pieces)} pieces ({material})")
+        print(f"  {shape_name}: {len(pieces)} pieces ({material}, whole={len(whole_verts)}v/{len(whole_faces)}f)")
         total += 1  # whole mesh
 
     # 7. Audio SFX
@@ -1424,11 +2284,20 @@ def main():
         r_min, r_max = cfg.get("radius_range", (100, 3400))
         z_off = cfg.get("z", 0)
         instances = []
-        for _ in range(count):
+        attempts = 0
+        while len(instances) < count and attempts < count * 8:
+            attempts += 1
             angle = scatter_rng.uniform(0, 2 * math.pi)
             radius = scatter_rng.uniform(r_min, r_max)
             sx = radius * math.cos(angle)
             sy = radius * math.sin(angle)
+            # Keep paved dais, player spawn circle, and tower interior clear of vegetation
+            if math.hypot(sx, sy) < 610.0:
+                continue
+            if math.hypot(sx, sy + 900.0) < 220.0:
+                continue
+            if math.hypot(sx, sy - 2200.0) < 150.0:
+                continue
             sz = _ground_z(sx, sy, z_off)
             yaw = scatter_rng.uniform(0, 360)
             scale = scatter_rng.uniform(0.7, 1.3)
@@ -1436,8 +2305,12 @@ def main():
         scatter_layout[mesh_name] = {**cfg, "instances": instances}
 
     ruin_props = []
-    for ruin_name in ["SM_RuinColumn", "SM_RuinWall"]:
-        for i, p in enumerate(C._ring(4, 2900, 0, math.pi / 4)):
+    ruin_rings = {
+        "SM_RuinColumn": C._ring(4, 2900, 0, math.pi / 4),
+        "SM_RuinWall":   C._ring(4, 2950, 0, math.pi / 4 + math.pi / 6),
+    }
+    for ruin_name, ring_pts in ruin_rings.items():
+        for i, p in enumerate(ring_pts):
             ruin_props.append({
                 "mesh": ruin_name,
                 "label": f"{ruin_name}_{i}",
@@ -1445,20 +2318,31 @@ def main():
             })
 
     layout = {
-        "player_start": {"x": 0.0, "y": 0.0, "z": _ground_z(0.0, 0.0, 95.0)},
+        "player_start": {
+            "x": 0.0,
+            "y": -900.0,
+            "z": _ground_z(0.0, -900.0, 125.0),
+            "yaw": 90.0,
+        },
+        "arena_plaza": {
+            "x": 0.0,
+            "y": 0.0,
+            "z": _ground_z(0.0, 0.0, 0.0),
+            "yaw": 0.0,
+        },
         "structures": [
             {"definition": name, "x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3]}
             for name, p in C.STRUCTURE_PLACEMENTS
         ],
         "breakables": {
             def_name: [
-                {"x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3]}
+                {"x": p[0], "y": p[1], "z": _plaza_surface_z(p[0], p[1], p[2]), "yaw": p[3]}
                 for p in placements
             ]
             for def_name, placements in C.BREAKABLE_PLACEMENTS.items()
         },
         "crystals": [
-            {"x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3]}
+            {"x": p[0], "y": p[1], "z": _plaza_surface_z(p[0], p[1], p[2]), "yaw": p[3]}
             for p in C.CRYSTAL_PLACEMENTS
         ],
         "ruin_props": ruin_props,

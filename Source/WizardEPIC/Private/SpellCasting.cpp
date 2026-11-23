@@ -9,6 +9,7 @@
 #include "Engine/World.h"
 #include "FXSubsystem.h"
 #include "GameFramework/Character.h"
+#include "Misc/PackageName.h"
 #include "SpellDataAsset.h"
 #include "SpellProjectile.h"
 #include "UObject/SoftObjectPath.h"
@@ -35,13 +36,13 @@ namespace
 			FX->SpawnNiagara(Impact.Spell->NiagaraImpact, FTransform(Impact.Origin), Scale);
 		}
 
-		// Light flash
+		// Light flash (calibrated to Lumens for golden-hour daylight)
 		if (Impact.Spell && Impact.Spell->LightIntensity > 0.f)
 		{
 			FFXLightParams LP;
 			LP.Color = Color;
-			LP.Intensity = Impact.Spell->LightIntensity * Scale * (bPrimary ? 1.f : 0.6f);
-			LP.AttenuationRadius = Impact.Spell->LightRadius * FMath::Sqrt(Scale);
+			LP.Intensity = FMath::Clamp((bPrimary ? 130.f : 65.f) * FMath::Sqrt(Scale), 45.f, 160.f);
+			LP.AttenuationRadius = FMath::Clamp(Impact.Spell->LightRadius * 0.45f * FMath::Sqrt(Scale), 360.f, 820.f);
 			LP.Location = Impact.Origin + FVector(0.f, 0.f, 60.f);
 			LP.LifeTime = Impact.Spell->LightDuration;
 			LP.AttackTime = 0.02f;
@@ -56,13 +57,13 @@ namespace
 			Core.MeshName = TEXT("SM_FX_Sphere");
 			Core.MaterialName = TEXT("M_FX_Core");
 			Core.Transform = FTransform(FRotator::ZeroRotator, Impact.Origin, FVector(1.f));
-			Core.LifeTime = 0.36f;
+			Core.LifeTime = 0.28f;
 			Core.ScaleStart = FVector(0.5f * Scale);
-			Core.ScaleEnd = FVector(3.8f * Scale);
-			Core.ScaleTime = 0.18f;
-			Core.FadeOutTime = 0.24f;
+			Core.ScaleEnd = FVector(1.05f * Scale);
+			Core.ScaleTime = 0.14f;
+			Core.FadeOutTime = 0.20f;
 			Core.VectorParams.Add(TEXT("Tint"), Color);
-			Core.ScalarParams.Add(TEXT("EmissiveScale"), 28.f);
+			Core.ScalarParams.Add(TEXT("EmissiveScale"), 5.5f);
 			Core.ScalarParams.Add(TEXT("Fade"), 1.f);
 			FX->SpawnMesh(Core);
 		}
@@ -79,7 +80,7 @@ namespace
 			Ring.ScaleTime = 0.34f;
 			Ring.FadeOutTime = 0.26f;
 			Ring.VectorParams.Add(TEXT("Tint"), Color);
-			Ring.ScalarParams.Add(TEXT("EmissiveScale"), 14.f);
+			Ring.ScalarParams.Add(TEXT("EmissiveScale"), 5.0f);
 			Ring.ScalarParams.Add(TEXT("Fade"), 1.f);
 			FX->SpawnMesh(Ring);
 		}
@@ -222,7 +223,7 @@ namespace
 		for (int32 i = 0; i < Count; ++i)
 		{
 			const float StepDelay = i * Spell->PillarStepDelay;
-			const float Dist = Spell->PillarStartDistance + i * Spell->PillarSpacing;
+			const float Dist = FMath::Max(Spell->PillarStartDistance, 520.f) + i * Spell->PillarSpacing;
 			const FVector SampleXY = StartBase + FlatDir * Dist;
 
 			FX->Delay(StepDelay, [World, WeakOwner, WeakSpell, SampleXY, FlatDir, ChargeT01, ChargeScale, ResetSerial, i]()
@@ -247,7 +248,7 @@ namespace
 					GroundPos = Hit.ImpactPoint;
 				}
 
-				const float PillarH = Sp->PillarHeight * FMath::Lerp(0.85f, 1.25f, static_cast<float>(i) / FMath::Max(1, Sp->PillarCount - 1)) * FMath::Sqrt(ChargeScale);
+				const float PillarH = Sp->PillarHeight * FMath::Lerp(0.65f, 1.15f, static_cast<float>(i) / FMath::Max(1, Sp->PillarCount - 1)) * FMath::Sqrt(ChargeScale);
 				const float PillarR = Sp->PillarRadius * FMath::Sqrt(ChargeScale);
 
 				FFXMeshParams Pillar;
@@ -497,12 +498,41 @@ void UWizardSpellLibrary::CastSpell(UWizardAbilityComponent* Caster, USpellDataA
 
 		FFXLightParams CastFlash;
 		CastFlash.Color = Spell->Color;
-		CastFlash.Intensity = 1.2e6f * ChargeScale;
-		CastFlash.AttenuationRadius = 700.f;
+		CastFlash.Intensity = FMath::Clamp(60.f * FMath::Sqrt(ChargeScale), 45.f, 160.f);
+		CastFlash.AttenuationRadius = 420.f;
 		CastFlash.Location = HandLoc;
 		CastFlash.LifeTime = 0.22f;
 		CastFlash.bCastShadows = false;
 		FX->SpawnLight(CastFlash);
+
+		FFXMeshParams FlashCore;
+		FlashCore.MeshName = TEXT("SM_FX_Sphere");
+		FlashCore.MaterialName = TEXT("M_FX_Core");
+		FlashCore.Transform = FTransform(FRotator::ZeroRotator, HandLoc, FVector(1.f));
+		FlashCore.LifeTime = 0.16f;
+		FlashCore.ScaleStart = FVector(0.18f * ChargeScale);
+		FlashCore.ScaleEnd = FVector(0.55f * ChargeScale);
+		FlashCore.ScaleTime = 0.08f;
+		FlashCore.FadeOutTime = 0.12f;
+		FlashCore.VectorParams.Add(TEXT("Tint"), Spell->Color);
+		FlashCore.ScalarParams.Add(TEXT("EmissiveScale"), 6.0f);
+		FlashCore.ScalarParams.Add(TEXT("Fade"), 1.f);
+		FX->SpawnMesh(FlashCore);
+
+		FFXBurstSpec CastBurst;
+		CastBurst.Kind = EFXSpriteKind::Flash;
+		CastBurst.Count = 4;
+		CastBurst.SpeedMin = 40.f;
+		CastBurst.SpeedMax = 180.f;
+		CastBurst.ConeHalfAngle = 40.f;
+		CastBurst.LifeMin = 0.08f;
+		CastBurst.LifeMax = 0.16f;
+		CastBurst.SizeMin = 40.f;
+		CastBurst.SizeMax = 80.f;
+		CastBurst.SizeEndMul = 1.5f;
+		CastBurst.ColorA = FLinearColor::White * 3.f;
+		CastBurst.ColorB = Spell->Color * 2.f;
+		FX->Burst(CastBurst, FTransform(AimDirection.Rotation(), HandLoc), FMath::Sqrt(ChargeScale));
 	}
 
 	if (UWizardAudioSubsystem* Audio = UWizardAudioSubsystem::Get(World))
@@ -516,8 +546,17 @@ void UWizardSpellLibrary::CastSpell(UWizardAbilityComponent* Caster, USpellDataA
 	switch (Spell->Delivery)
 	{
 	case ESpellDelivery::Projectile:
-		AWizardProjectile::Launch(Spell, ChargeT01, HandLoc + AimDirection.GetSafeNormal() * 45.f, AimDirection, Caster->GetOwner());
+	{
+		const FVector DirN = AimDirection.GetSafeNormal();
+		const FVector SpawnLoc = HandLoc + DirN * 70.f;
+		FVector LaunchDir = (AimPoint - SpawnLoc).GetSafeNormal();
+		if (LaunchDir.IsNearlyZero() || FVector::DotProduct(LaunchDir, DirN) <= 0.1f)
+		{
+			LaunchDir = DirN;
+		}
+		AWizardProjectile::Launch(Spell, ChargeT01, SpawnLoc, LaunchDir, Caster->GetOwner());
 		break;
+	}
 
 	case ESpellDelivery::GroundLine:
 		CastGroundLine(Caster, Spell, AimPoint, AimDirection, ChargeT01);
@@ -623,11 +662,16 @@ void UWizardSpellLibrary::PlayCastAnim(const UWizardAbilityComponent* Caster, bo
 	}
 
 	const TCHAR* Path = bCharged
-		? TEXT("/Game/Variant_Combat/Anims/AM_ChargedAttack.AM_ChargedAttack")
-		: TEXT("/Game/Variant_Combat/Anims/AM_ComboAttack.AM_ComboAttack");
-	if (UAnimMontage* Montage = Cast<UAnimMontage>(FSoftObjectPath(Path).TryLoad()))
+		? TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_ChargedAttack.MM_ChargedAttack")
+		: TEXT("/Game/Characters/Mannequins/Anims/Unarmed/Attack/MM_Attack_01.MM_Attack_01");
+	const FSoftObjectPath SoftPath(Path);
+	const FString PackageName = SoftPath.GetLongPackageName();
+	if (!PackageName.IsEmpty() && FPackageName::DoesPackageExist(PackageName))
 	{
-		AnimInst->Montage_Play(Montage, bCharged ? 1.15f : 1.35f);
+		if (UAnimMontage* Montage = Cast<UAnimMontage>(SoftPath.TryLoad()))
+		{
+			AnimInst->Montage_Play(Montage, bCharged ? 1.15f : 1.35f);
+		}
 	}
 }
 

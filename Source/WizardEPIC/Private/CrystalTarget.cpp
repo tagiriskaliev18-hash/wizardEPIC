@@ -21,9 +21,9 @@ ACrystalTarget::ACrystalTarget()
 
 	GlowLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("GlowLight"));
 	GlowLight->SetupAttachment(CrystalMesh);
-	GlowLight->SetIntensityUnits(ELightUnits::Candelas);
-	GlowLight->SetIntensity(8.e4f);
-	GlowLight->SetAttenuationRadius(650.f);
+	GlowLight->SetIntensityUnits(ELightUnits::Lumens);
+	GlowLight->SetIntensity(35.f);
+	GlowLight->SetAttenuationRadius(280.f);
 	GlowLight->SetLightColor(Color);
 	GlowLight->SetCastShadows(false);
 }
@@ -69,7 +69,8 @@ void ACrystalTarget::Tick(float DeltaTime)
 
 	if (GlowLight)
 	{
-		GlowLight->SetIntensity(8.e4f * EasedScale);
+		GlowLight->SetIntensityUnits(ELightUnits::Lumens);
+		GlowLight->SetIntensity(35.f * EasedScale);
 	}
 }
 
