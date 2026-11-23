@@ -30,7 +30,7 @@ namespace
 	constexpr int32 MaxSpriteKinds = 11;
 	constexpr int32 MaxSpritesPerLayer = 512;
 	constexpr int32 MaxDebrisActive = 180;
-	constexpr int32 MaxPoolMeshes = 256;
+	constexpr int32 MaxPoolMeshes = 512;
 	constexpr int32 MaxPoolLights = 24;
 
 	bool IsAdditiveSpriteKind(EFXSpriteKind Kind)
@@ -110,6 +110,7 @@ struct UWizardFXSubsystem::FFXRuntimeState
 		FVector BaseScale = FVector::OneVector;
 		FVector ScaleStart = FVector::OneVector;
 		FVector ScaleEnd = FVector::OneVector;
+		FRotator RotationRate = FRotator::ZeroRotator;
 		float ScaleTime = 0.25f;
 		float LifeTime = 0.5f;
 		float FadeOutTime = 0.3f;
@@ -440,6 +441,9 @@ void UWizardFXSubsystem::FFXRuntimeState::RebuildLightningBolt(UWizardFXSubsyste
 	FVector MainDir = (P.End - P.Start).GetSafeNormal();
 	FVector SideA, SideB;
 	MainDir.FindBestAxisVectors(SideA, SideB);
+	const bool bGroundArc = FMath::Abs(P.Start.Z - P.End.Z) < 120.f;
+	const float GroundFloorZ = FMath::Min(P.Start.Z, P.End.Z) - 4.f;
+	const float GroundCeilZ = FMath::Max(P.Start.Z, P.End.Z) + 65.f;
 
 	float Jag = P.Jag;
 	for (int32 Step = SegCount; Step > 1; Step >>= 1)
@@ -450,7 +454,12 @@ void UWizardFXSubsystem::FFXRuntimeState::RebuildLightningBolt(UWizardFXSubsyste
 			const FVector Mid = 0.5f * (Points[i] + Points[i + Step]);
 			const float OffA = FMath::FRandRange(-Jag, Jag);
 			const float OffB = FMath::FRandRange(-Jag, Jag);
-			Points[i + Half] = Mid + SideA * OffA + SideB * OffB;
+			FVector Displaced = Mid + SideA * OffA + SideB * OffB;
+			if (bGroundArc)
+			{
+				Displaced.Z = FMath::Clamp(Displaced.Z, GroundFloorZ, GroundCeilZ);
+			}
+			Points[i + Half] = Displaced;
 		}
 		Jag *= 0.55f;
 	}
@@ -471,7 +480,7 @@ void UWizardFXSubsystem::FFXRuntimeState::RebuildLightningBolt(UWizardFXSubsyste
 		MP.bCastShadow = false;
 		MP.bCollision = false;
 		MP.VectorParams.Add(TEXT("Tint"), P.Color);
-		MP.ScalarParams.Add(TEXT("EmissiveScale"), 7.5f);
+		MP.ScalarParams.Add(TEXT("EmissiveScale"), 16.f);
 		MP.ScalarParams.Add(TEXT("Fade"), 1.f);
 
 		const FRotator Rot = Delta.Rotation();
@@ -499,18 +508,27 @@ void UWizardFXSubsystem::FFXRuntimeState::RebuildLightningBolt(UWizardFXSubsyste
 		SpawnSegment(Points[i], Points[i + 1], W);
 	}
 
-	// Branches
-	const int32 Branches = FMath::Clamp(P.BranchCount, 0, 5);
+	// Branches (up to 8 jagged forks; ground arcs spread cleanly across the terrain surface!)
+	const int32 Branches = FMath::Clamp(P.BranchCount, 0, 8);
 	for (int32 b = 0; b < Branches; ++b)
 	{
 		const int32 AnchorIdx = FMath::RandRange(FMath::Max(1, SegCount / 5), FMath::Max(1, (SegCount * 4) / 5));
 		FVector Prev = Points[AnchorIdx];
 		FVector BranchDir = (MainDir + FMath::VRand() * 0.65f).GetSafeNormal();
+		if (bGroundArc)
+		{
+			BranchDir.Z = FMath::FRandRange(-0.08f, 0.14f);
+			BranchDir.Normalize();
+		}
 		const int32 BranchSegs = 3;
 		const float SegLen = P.BranchLength / static_cast<float>(BranchSegs);
 		for (int32 s = 0; s < BranchSegs; ++s)
 		{
-			const FVector Next = Prev + (BranchDir + FMath::VRand() * 0.35f).GetSafeNormal() * SegLen;
+			FVector Next = Prev + (BranchDir + FMath::VRand() * 0.35f).GetSafeNormal() * SegLen;
+			if (bGroundArc)
+			{
+				Next.Z = FMath::Clamp(Next.Z, GroundFloorZ, GroundCeilZ);
+			}
 			SpawnSegment(Prev, Next, P.Thickness * P.BranchThicknessScale * (1.f - 0.25f * s));
 			Prev = Next;
 		}
@@ -690,6 +708,11 @@ void UWizardFXSubsystem::Tick(float DeltaTime)
 			const float Eased = 1.f - FMath::Pow(1.f - ST, 3.f);
 			const FVector CurScale = FMath::Lerp(M.ScaleStart, M.ScaleEnd, Eased);
 			Comp->SetRelativeScale3D(M.BaseScale * CurScale);
+		}
+
+		if (!M.RotationRate.IsNearlyZero())
+		{
+			Comp->AddWorldRotation(M.RotationRate * DeltaTime);
 		}
 
 		if (M.LifeTime > 0.f && M.FadeOutTime > KINDA_SMALL_NUMBER && M.MID.IsValid())
@@ -1024,6 +1047,7 @@ UStaticMeshComponent* UWizardFXSubsystem::SpawnMesh(const FFXMeshParams& Params)
 	Entry.BaseScale = BaseScale;
 	Entry.ScaleStart = Params.ScaleStart;
 	Entry.ScaleEnd = Params.ScaleEnd;
+	Entry.RotationRate = Params.RotationRate;
 	Entry.ScaleTime = Params.ScaleTime;
 	Entry.LifeTime = Params.LifeTime;
 	Entry.FadeOutTime = Params.FadeOutTime;

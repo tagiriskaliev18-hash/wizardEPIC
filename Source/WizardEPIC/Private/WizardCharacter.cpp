@@ -15,6 +15,7 @@
 #include "SpellDataAsset.h"
 #include "UObject/SoftObjectPath.h"
 #include "WizardAbilityComponent.h"
+#include "WizardTypes.h"
 #include UE_INLINE_GENERATED_CPP_BY_NAME(WizardCharacter)
 
 namespace
@@ -42,10 +43,49 @@ namespace
 		}
 		return nullptr;
 	}
+
+	FTransform GetRefBoneComponentTransform(const USkeletalMesh* SkelMesh, FName BoneName, bool& bOutFound)
+	{
+		bOutFound = false;
+		if (!SkelMesh)
+		{
+			return FTransform::Identity;
+		}
+		const FReferenceSkeleton& RefSkel = SkelMesh->GetRefSkeleton();
+		int32 BoneIdx = RefSkel.FindBoneIndex(BoneName);
+		if (BoneIdx == INDEX_NONE)
+		{
+			return FTransform::Identity;
+		}
+		const TArray<FTransform>& RefPoses = RefSkel.GetRefBonePose();
+		FTransform CS = FTransform::Identity;
+		while (BoneIdx != INDEX_NONE && RefPoses.IsValidIndex(BoneIdx))
+		{
+			CS = CS * RefPoses[BoneIdx];
+			BoneIdx = RefSkel.GetParentIndex(BoneIdx);
+		}
+		bOutFound = true;
+		return CS;
+	}
+
+	FLinearColor GetElementCrystalColor(ESpellElement Element)
+	{
+		switch (Element)
+		{
+		case ESpellElement::Fire:      return FLinearColor(1.00f, 0.34f, 0.04f, 1.f); // Crimson-Gold
+		case ESpellElement::Earth:     return FLinearColor(0.20f, 0.92f, 0.36f, 1.f); // Amber-Emerald
+		case ESpellElement::Wind:      return FLinearColor(0.42f, 0.95f, 1.00f, 1.f); // Icy-Cyan
+		case ESpellElement::Lightning: return FLinearColor(0.48f, 0.32f, 1.00f, 1.f); // Electric-Violet
+		default:                       return FLinearColor(1.00f, 0.34f, 0.04f, 1.f);
+		}
+	}
+
+	constexpr float StaffCrystalLocalZ = 106.f;
 }
 
 AWizardCharacter::AWizardCharacter()
 {
+	PrimaryActorTick.bCanEverTick = true;
 	SpawnCollisionHandlingMethod = ESpawnActorCollisionHandlingMethod::AdjustIfPossibleButAlwaysSpawn;
 
 	bUseControllerRotationYaw = false;
@@ -84,6 +124,16 @@ AWizardCharacter::AWizardCharacter()
 	AbilityComponent = CreateDefaultSubobject<UWizardAbilityComponent>(TEXT("AbilityComponent"));
 	AbilityComponent->WalkSpeed = 520.f;
 
+	HatMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("HatMesh"));
+	HatMesh->SetupAttachment(GetMesh());
+	HatMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	HatMesh->SetCastShadow(true);
+
+	CloakMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("CloakMesh"));
+	CloakMesh->SetupAttachment(GetMesh());
+	CloakMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	CloakMesh->SetCastShadow(true);
+
 	StaffMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("StaffMesh"));
 	StaffMesh->SetupAttachment(GetMesh());
 	StaffMesh->SetRelativeLocation(FVector(24.f, 28.f, 95.f));
@@ -92,16 +142,25 @@ AWizardCharacter::AWizardCharacter()
 
 	StaffOrbMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("StaffOrbMesh"));
 	StaffOrbMesh->SetupAttachment(StaffMesh);
-	StaffOrbMesh->SetRelativeLocation(FVector(0.f, 0.f, 155.f));
-	StaffOrbMesh->SetRelativeScale3D(FVector(0.18f));
+	StaffOrbMesh->SetRelativeLocation(FVector(0.f, 0.f, StaffCrystalLocalZ));
+	StaffOrbMesh->SetRelativeScale3D(FVector(0.08f));
 	StaffOrbMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
 	StaffOrbMesh->SetCastShadow(false);
 
+	StaffRuneMesh = CreateDefaultSubobject<UStaticMeshComponent>(TEXT("StaffRuneMesh"));
+	StaffRuneMesh->SetupAttachment(StaffMesh);
+	StaffRuneMesh->SetRelativeLocation(FVector(0.f, 0.f, StaffCrystalLocalZ));
+	StaffRuneMesh->SetRelativeRotation(FRotator(68.f, 0.f, 0.f));
+	StaffRuneMesh->SetRelativeScale3D(FVector(0.36f));
+	StaffRuneMesh->SetCollisionEnabled(ECollisionEnabled::NoCollision);
+	StaffRuneMesh->SetCastShadow(false);
+
 	StaffLight = CreateDefaultSubobject<UPointLightComponent>(TEXT("StaffLight"));
-	StaffLight->SetupAttachment(StaffOrbMesh);
+	StaffLight->SetupAttachment(StaffMesh);
+	StaffLight->SetRelativeLocation(FVector(0.f, 0.f, StaffCrystalLocalZ));
 	StaffLight->SetIntensityUnits(ELightUnits::Lumens);
-	StaffLight->SetIntensity(18.f);
-	StaffLight->SetAttenuationRadius(260.f);
+	StaffLight->SetIntensity(48.f);
+	StaffLight->SetAttenuationRadius(380.f);
 	StaffLight->SetCastShadows(false);
 	StaffLight->SetLightColor(ActiveOrbColor);
 }
@@ -109,7 +168,7 @@ AWizardCharacter::AWizardCharacter()
 void AWizardCharacter::OnConstruction(const FTransform& Transform)
 {
 	Super::OnConstruction(Transform);
-	AttachStaffToHand();
+	AttachWizardGear();
 }
 
 void AWizardCharacter::BeginPlay()
@@ -118,6 +177,7 @@ void AWizardCharacter::BeginPlay()
 	{
 		AbilityComponent->OnSpellSelected.AddUniqueDynamic(this, &AWizardCharacter::HandleSpellSelected);
 		AbilityComponent->OnChargeChanged.AddUniqueDynamic(this, &AWizardCharacter::HandleChargeChanged);
+		AbilityComponent->OnSpellCast.AddUniqueDynamic(this, &AWizardCharacter::HandleSpellCast);
 	}
 
 	Super::BeginPlay();
@@ -144,15 +204,66 @@ void AWizardCharacter::BeginPlay()
 		ApplyWizardRobeTint();
 	}
 
+	// Load sculpted wizard hat & battle-mage cloak
+	if (HatMesh)
+	{
+		if (UStaticMesh* HatStatic = TryLoadAssetIfExists<UStaticMesh>(TEXT("/Game/Wizard/Environment/Meshes/SM_WizardHat.SM_WizardHat")))
+		{
+			HatMesh->SetStaticMesh(HatStatic);
+		}
+	}
+
+	if (CloakMesh)
+	{
+		if (UStaticMesh* CloakStatic = TryLoadAssetIfExists<UStaticMesh>(TEXT("/Game/Wizard/Environment/Meshes/SM_WizardCloak.SM_WizardCloak")))
+		{
+			CloakMesh->SetStaticMesh(CloakStatic);
+		}
+	}
+
+	// Load upgraded gnarled forked oak staff with faceted floating elemental crystal
 	if (StaffMesh)
 	{
 		if (UStaticMesh* StaffStatic = TryLoadAssetIfExists<UStaticMesh>(TEXT("/Game/Wizard/Environment/Meshes/SM_WizardStaff.SM_WizardStaff")))
 		{
 			StaffMesh->SetStaticMesh(StaffStatic);
 		}
-		AttachStaffToHand();
+
+		// Create dynamic material instance for the sculpted crystal slot on SM_WizardStaff
+		int32 CrystalSlotIdx = INDEX_NONE;
+		const TArray<FName> SlotNames = StaffMesh->GetMaterialSlotNames();
+		for (int32 i = 0; i < SlotNames.Num(); ++i)
+		{
+			const FString Lower = SlotNames[i].ToString().ToLower();
+			if (Lower.Contains(TEXT("crystal")) || Lower.Contains(TEXT("gem")) || Lower.Contains(TEXT("orb")))
+			{
+				CrystalSlotIdx = i;
+				break;
+			}
+		}
+		if (CrystalSlotIdx == INDEX_NONE && StaffMesh->GetNumMaterials() >= 2)
+		{
+			CrystalSlotIdx = 1;
+		}
+		if (CrystalSlotIdx != INDEX_NONE)
+		{
+			UMaterialInterface* CrystalMat = TryLoadAssetIfExists<UMaterialInterface>(TEXT("/Game/Wizard/FX/Materials/M_StaffCrystal.M_StaffCrystal"));
+			if (!CrystalMat)
+			{
+				CrystalMat = StaffMesh->GetMaterial(CrystalSlotIdx);
+			}
+			if (CrystalMat)
+			{
+				StaffCrystalMID = UMaterialInstanceDynamic::Create(CrystalMat, StaffMesh);
+				if (StaffCrystalMID)
+				{
+					StaffMesh->SetMaterial(CrystalSlotIdx, StaffCrystalMID);
+				}
+			}
+		}
 	}
 
+	// Subtle inner glow pinpoint inside the sculpted crystal (keeps GetStaffOrbLocation exact)
 	if (StaffOrbMesh)
 	{
 		UStaticMesh* OrbStatic = TryLoadAssetIfExists<UStaticMesh>(TEXT("/Game/Wizard/FX/Meshes/SM_FX_Sphere.SM_FX_Sphere"));
@@ -166,10 +277,6 @@ void AWizardCharacter::BeginPlay()
 		}
 
 		UMaterialInterface* OrbMat = TryLoadAssetIfExists<UMaterialInterface>(TEXT("/Game/Wizard/FX/Materials/M_FX_Core.M_FX_Core"));
-		if (!OrbMat)
-		{
-			OrbMat = TryLoadAssetIfExists<UMaterialInterface>(TEXT("/Engine/BasicShapes/BasicShapeMaterial.BasicShapeMaterial"));
-		}
 		if (OrbMat)
 		{
 			StaffOrbMID = UMaterialInstanceDynamic::Create(OrbMat, StaffOrbMesh);
@@ -181,16 +288,57 @@ void AWizardCharacter::BeginPlay()
 		}
 	}
 
+	// Floating geometric arcane rune circle around the staff crystal
+	if (StaffRuneMesh)
+	{
+		if (UStaticMesh* RuneStatic = TryLoadAssetIfExists<UStaticMesh>(TEXT("/Game/Wizard/FX/Meshes/SM_RuneCircle.SM_RuneCircle")))
+		{
+			StaffRuneMesh->SetStaticMesh(RuneStatic);
+		}
+		UMaterialInterface* RuneMat = TryLoadAssetIfExists<UMaterialInterface>(TEXT("/Game/Wizard/FX/Materials/M_FX_RuneCircle.M_FX_RuneCircle"));
+		if (RuneMat)
+		{
+			StaffRuneMID = UMaterialInstanceDynamic::Create(RuneMat, StaffRuneMesh);
+			if (StaffRuneMID)
+			{
+				StaffRuneMID->SetScalarParameterValue(TEXT("Fade"), 1.f);
+				StaffRuneMesh->SetMaterial(0, StaffRuneMID);
+			}
+		}
+	}
+
+	AttachWizardGear();
+
 	if (AbilityComponent)
 	{
 		if (const USpellDataAsset* CurrentSpell = AbilityComponent->GetSelectedSpell())
 		{
-			ActiveOrbColor = CurrentSpell->Color;
+			ActiveOrbColor = GetElementCrystalColor(CurrentSpell->Element);
 		}
 		CurrentChargeT01 = AbilityComponent->GetChargeFraction();
 	}
 
 	UpdateStaffVisuals();
+}
+
+void AWizardCharacter::Tick(float DeltaTime)
+{
+	Super::Tick(DeltaTime);
+
+	if (CastBurstTimer > 0.f)
+	{
+		CastBurstTimer = FMath::Max(0.f, CastBurstTimer - DeltaTime);
+		UpdateStaffVisuals();
+	}
+
+	// Continuous graceful spin of the arcane rune circle around the floating staff crystal
+	if (StaffRuneMesh && StaffRuneMesh->IsRegistered())
+	{
+		const float BurstFactor = FMath::Clamp(CastBurstTimer / 0.85f, 0.f, 1.f);
+		const float SpinSpeed = 52.f + 220.f * CurrentChargeT01 + 320.f * BurstFactor;
+		RuneSpinAngle = FMath::Fmod(RuneSpinAngle + SpinSpeed * DeltaTime, 360.f);
+		StaffRuneMesh->SetRelativeRotation(FRotator(68.f, RuneSpinAngle, 0.f));
+	}
 }
 
 FVector AWizardCharacter::GetStaffOrbLocation() const
@@ -201,9 +349,70 @@ FVector AWizardCharacter::GetStaffOrbLocation() const
 	}
 	if (StaffMesh && StaffMesh->IsRegistered())
 	{
-		return StaffMesh->GetComponentLocation() + StaffMesh->GetComponentQuat().RotateVector(FVector(0.f, 0.f, 155.f));
+		return StaffMesh->GetComponentLocation() + StaffMesh->GetComponentQuat().RotateVector(FVector(0.f, 0.f, StaffCrystalLocalZ));
 	}
 	return GetActorLocation() + GetActorForwardVector() * 55.f + FVector(0.f, 0.f, 55.f);
+}
+
+void AWizardCharacter::AttachWizardGear()
+{
+	USkeletalMeshComponent* CharMesh = GetMesh();
+	const USkeletalMesh* SkelMesh = CharMesh ? CharMesh->GetSkeletalMeshAsset() : nullptr;
+
+	// Self-calibrate OBJ Y-axis handedness from SM_WizardCloak's asymmetric trailing cape bounds:
+	// Manny's back in ComponentSpace is -Y. If the cape extends further in +Y, rotate 180 deg yaw.
+	bool bFlipY = false;
+	if (CloakMesh && CloakMesh->GetStaticMesh())
+	{
+		const FBox CloakBox = CloakMesh->GetStaticMesh()->GetBoundingBox();
+		bFlipY = (FMath::Abs(CloakBox.Max.Y) > FMath::Abs(CloakBox.Min.Y));
+	}
+	const FQuat BaseAlignCS = bFlipY ? FQuat(FRotator(0.f, 180.f, 0.f)) : FQuat::Identity;
+
+	// Attach battle-mage hooded mantle & flared cloak to spine_03
+	if (CloakMesh && CharMesh)
+	{
+		static const FName SpineSocket(TEXT("spine_03"));
+		bool bFoundBone = false;
+		const FTransform SpineCS = GetRefBoneComponentTransform(SkelMesh, SpineSocket, bFoundBone);
+		if (bFoundBone && CharMesh->DoesSocketExist(SpineSocket))
+		{
+			// Anchor collar smoothly over Manny's upper torso/shoulders with hem sweeping cleanly above boots
+			const FTransform DesiredCS(BaseAlignCS, FVector(0.f, -2.f, SpineCS.GetLocation().Z + 4.f), FVector::OneVector);
+			const FTransform LocalT = DesiredCS.GetRelativeTransform(SpineCS);
+			CloakMesh->AttachToComponent(CharMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, SpineSocket);
+			CloakMesh->SetRelativeLocationAndRotation(LocalT.GetLocation(), LocalT.GetRotation());
+		}
+		else
+		{
+			CloakMesh->AttachToComponent(CharMesh, FAttachmentTransformRules::KeepRelativeTransform);
+			CloakMesh->SetRelativeLocationAndRotation(FVector(0.f, -2.f, 128.f), BaseAlignCS);
+		}
+	}
+
+	// Attach wide-brimmed pointed wizard hat to head socket
+	if (HatMesh && CharMesh)
+	{
+		static const FName HeadSocket(TEXT("head"));
+		bool bFoundBone = false;
+		const FTransform HeadCS = GetRefBoneComponentTransform(SkelMesh, HeadSocket, bFoundBone);
+		// Slight regal backward tilt (-5 deg around X in Manny ComponentSpace where +Y is forward)
+		const FQuat HatTiltCS = FQuat(FVector(1.f, 0.f, 0.f), FMath::DegreesToRadians(-5.f)) * BaseAlignCS;
+		if (bFoundBone && CharMesh->DoesSocketExist(HeadSocket))
+		{
+			const FTransform DesiredCS(HatTiltCS, HeadCS.GetLocation() + FVector(0.f, -1.5f, 11.5f), FVector::OneVector);
+			const FTransform LocalT = DesiredCS.GetRelativeTransform(HeadCS);
+			HatMesh->AttachToComponent(CharMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, HeadSocket);
+			HatMesh->SetRelativeLocationAndRotation(LocalT.GetLocation(), LocalT.GetRotation());
+		}
+		else
+		{
+			HatMesh->AttachToComponent(CharMesh, FAttachmentTransformRules::KeepRelativeTransform);
+			HatMesh->SetRelativeLocationAndRotation(FVector(0.f, -1.5f, 172.f), HatTiltCS);
+		}
+	}
+
+	AttachStaffToHand();
 }
 
 void AWizardCharacter::AttachStaffToHand()
@@ -218,8 +427,8 @@ void AWizardCharacter::AttachStaffToHand()
 	if (CharMesh->DoesSocketExist(HandSocket))
 	{
 		StaffMesh->AttachToComponent(CharMesh, FAttachmentTransformRules::SnapToTargetNotIncludingScale, HandSocket);
-		StaffMesh->SetRelativeLocation(FVector(0.f, 0.f, -35.f));
-		StaffMesh->SetRelativeRotation(FRotator(-65.f, 0.f, 0.f));
+		StaffMesh->SetRelativeLocation(FVector(0.f, 0.f, 0.f));
+		StaffMesh->SetRelativeRotation(FRotator(-68.f, 0.f, 0.f));
 	}
 	else
 	{
@@ -237,12 +446,18 @@ void AWizardCharacter::ApplyWizardRobeTint()
 		return;
 	}
 
-	const FLinearColor ObsidianIndigo(0.07f, 0.06f, 0.16f, 1.f);
-	const FLinearColor ArcaneGold(0.72f, 0.56f, 0.22f, 1.f);
+	// Keep the underlying mannequin in deep shadowed obsidian cloth so only the sculpted cloak/hat gold gleams
+	const FLinearColor ShadowCloth(0.015f, 0.018f, 0.042f, 1.f);
+	UMaterialInterface* ObsidianMat = TryLoadAssetIfExists<UMaterialInterface>(
+		TEXT("/Game/Wizard/Environment/Materials/M_WizardRobe_Obsidian.M_WizardRobe_Obsidian"));
 
 	const int32 NumMaterials = CharMesh->GetNumMaterials();
 	for (int32 SlotIdx = 0; SlotIdx < NumMaterials; ++SlotIdx)
 	{
+		if (ObsidianMat)
+		{
+			CharMesh->SetMaterial(SlotIdx, ObsidianMat);
+		}
 		UMaterialInterface* BaseMat = CharMesh->GetMaterial(SlotIdx);
 		if (!BaseMat)
 		{
@@ -250,36 +465,55 @@ void AWizardCharacter::ApplyWizardRobeTint()
 		}
 		if (UMaterialInstanceDynamic* MID = CharMesh->CreateDynamicMaterialInstance(SlotIdx, BaseMat))
 		{
-			const bool bAccentSlot = (SlotIdx % 2) == 1;
-			const FLinearColor SlotColor = bAccentSlot ? ArcaneGold : ObsidianIndigo;
-			MID->SetVectorParameterValue(TEXT("Tint"), SlotColor);
-			MID->SetVectorParameterValue(TEXT("BaseColor"), SlotColor);
-			MID->SetVectorParameterValue(TEXT("ClothColor"), ObsidianIndigo);
-			MID->SetVectorParameterValue(TEXT("BaseColorTint"), SlotColor);
+			MID->SetVectorParameterValue(TEXT("Tint"), ShadowCloth);
+			MID->SetVectorParameterValue(TEXT("BaseColor"), ShadowCloth);
+			MID->SetVectorParameterValue(TEXT("ClothColor"), ShadowCloth);
+			MID->SetVectorParameterValue(TEXT("BaseColorTint"), ShadowCloth);
 		}
 	}
 }
 
 void AWizardCharacter::UpdateStaffVisuals()
 {
-	const float ScaleMul = FMath::Lerp(1.f, 2.4f, CurrentChargeT01);
+	const float BurstFactor = FMath::Clamp(CastBurstTimer / 0.85f, 0.f, 1.f);
+	const float Energy = FMath::Clamp(CurrentChargeT01 + BurstFactor * 0.75f, 0.f, 1.4f);
+
 	if (StaffOrbMesh)
 	{
-		StaffOrbMesh->SetRelativeScale3D(FVector(0.18f * ScaleMul));
+		StaffOrbMesh->SetRelativeScale3D(FVector(0.08f * FMath::Lerp(1.f, 2.2f, Energy)));
 	}
 
-	const float Emissive = FMath::Lerp(3.5f, 10.f, CurrentChargeT01);
 	if (StaffOrbMID)
 	{
 		StaffOrbMID->SetVectorParameterValue(TEXT("Tint"), ActiveOrbColor);
-		StaffOrbMID->SetScalarParameterValue(TEXT("EmissiveScale"), Emissive);
+		StaffOrbMID->SetScalarParameterValue(TEXT("EmissiveScale"), FMath::Lerp(5.5f, 14.f, Energy));
 		StaffOrbMID->SetScalarParameterValue(TEXT("Fade"), 1.f);
+	}
+
+	if (StaffCrystalMID)
+	{
+		StaffCrystalMID->SetVectorParameterValue(TEXT("ElementColor"), ActiveOrbColor);
+		StaffCrystalMID->SetScalarParameterValue(TEXT("EmissiveScale"), FMath::Lerp(8.5f, 22.f, Energy));
+	}
+
+	if (StaffRuneMesh)
+	{
+		// Scale smoothly around staff crystal (expands during charge and cast bursts!)
+		const float RuneScale = FMath::Lerp(0.36f, 0.62f, FMath::Clamp(Energy, 0.f, 1.f));
+		StaffRuneMesh->SetRelativeScale3D(FVector(RuneScale));
+	}
+
+	if (StaffRuneMID)
+	{
+		StaffRuneMID->SetVectorParameterValue(TEXT("Color"), ActiveOrbColor);
+		StaffRuneMID->SetScalarParameterValue(TEXT("EmissiveScale"), FMath::Lerp(10.f, 24.f, Energy));
+		StaffRuneMID->SetScalarParameterValue(TEXT("Fade"), 1.f);
 	}
 
 	if (StaffLight)
 	{
 		StaffLight->SetLightColor(ActiveOrbColor);
-		StaffLight->SetIntensity(FMath::Lerp(18.f, 65.f, CurrentChargeT01));
+		StaffLight->SetIntensity(FMath::Lerp(48.f, 145.f, FMath::Clamp(Energy, 0.f, 1.f)));
 	}
 }
 
@@ -287,7 +521,11 @@ void AWizardCharacter::HandleSpellSelected(int32 SlotIndex, const USpellDataAsse
 {
 	if (Spell)
 	{
-		ActiveOrbColor = Spell->Color;
+		ActiveOrbColor = GetElementCrystalColor(Spell->Element);
+	}
+	else
+	{
+		ActiveOrbColor = GetElementCrystalColor(static_cast<ESpellElement>(FMath::Clamp(SlotIndex, 0, 3)));
 	}
 	UpdateStaffVisuals();
 }
@@ -295,5 +533,11 @@ void AWizardCharacter::HandleSpellSelected(int32 SlotIndex, const USpellDataAsse
 void AWizardCharacter::HandleChargeChanged(float ChargeT01)
 {
 	CurrentChargeT01 = FMath::Clamp(ChargeT01, 0.f, 1.f);
+	UpdateStaffVisuals();
+}
+
+void AWizardCharacter::HandleSpellCast(int32 SlotIndex, float ChargeT01)
+{
+	CastBurstTimer = 0.85f;
 	UpdateStaffVisuals();
 }

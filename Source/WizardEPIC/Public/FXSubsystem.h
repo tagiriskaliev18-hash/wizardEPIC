@@ -226,6 +226,10 @@ struct FFXMeshParams
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = FX)
 	float FadeOutTime = 0.3f;
 
+	/** Continuous world-space spin rate in degrees per second (for tornadoes, wind rings, rune circles). */
+	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = FX)
+	FRotator RotationRate = FRotator::ZeroRotator;
+
 	UPROPERTY(EditAnywhere, BlueprintReadOnly, Category = FX)
 	bool bCastShadow = false;
 

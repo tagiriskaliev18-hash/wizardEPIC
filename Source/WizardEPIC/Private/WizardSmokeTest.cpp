@@ -6,6 +6,7 @@
 #include "Engine/Engine.h"
 #include "Engine/World.h"
 #include "EngineUtils.h"
+#include "FXSubsystem.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
@@ -48,12 +49,20 @@ UWizardSmokeTest* UWizardSmokeTest::TryStart(const UObject* InWorldContext)
 		return nullptr;
 	}
 	Test->WorldContext = const_cast<UObject*>(InWorldContext);
-	Test->Start(1.2f);
+	Test->Start(4.2f);
 	return Test;
 }
 
 void UWizardSmokeTest::RequestShot(const FString& Name)
 {
+	// Keep all screenshots 100% pure cinema (zero "Preparing Shaders" or debug screen messages!)
+	if (GEngine)
+	{
+		GEngine->bEnableOnScreenDebugMessages = false;
+		GEngine->bEnableOnScreenDebugMessagesDisplay = false;
+		GEngine->ClearOnScreenDebugMessages();
+	}
+
 	const FString ShotPath = FPaths::ProjectSavedDir() / TEXT("Screenshots/Windows") / (Name + TEXT(".png"));
 	IFileManager::Get().MakeDirectory(*FPaths::GetPath(ShotPath), true);
 	FScreenshotRequest::RequestScreenshot(ShotPath, true, false);
@@ -117,6 +126,66 @@ void UWizardSmokeTest::Start(float InitialDelay)
 	NextStep = 0;
 	bFinished = false;
 	Report(TEXT("=== wizardEPIC SmokeTest START ==="));
+
+	// Suppress engine on-screen debug text ("Preparing Shaders", etc.) during automated cinema captures
+	if (GEngine)
+	{
+		GEngine->bEnableOnScreenDebugMessages = false;
+		GEngine->bEnableOnScreenDebugMessagesDisplay = false;
+		GEngine->ClearOnScreenDebugMessages();
+	}
+	if (UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContext.Get(), EGetWorldErrorMode::ReturnNull) : nullptr)
+	{
+		UKismetSystemLibrary::ExecuteConsoleCommand(World, TEXT("DisableAllScreenMessages"));
+
+		// Trigger async SM6 PSO shader compilation for all spell FX materials up front during warmup
+		if (UWizardFXSubsystem* FX = UWizardFXSubsystem::Get(World))
+		{
+			TWeakObjectPtr<UWorld> WeakWorld(World);
+			FX->Delay(0.20f, [WeakWorld]()
+			{
+				UWorld* W = WeakWorld.Get();
+				UWizardFXSubsystem* FXSys = UWizardFXSubsystem::Get(W);
+				if (!W || !FXSys)
+				{
+					return;
+				}
+				FVector WarmLoc(0.f, -620.f, 120.f);
+				if (APlayerController* PC = W->GetFirstPlayerController())
+				{
+					FVector CamLoc;
+					FRotator CamRot;
+					PC->GetPlayerViewPoint(CamLoc, CamRot);
+					WarmLoc = CamLoc + CamRot.Vector() * 260.f;
+				}
+				struct FWarmPair { const TCHAR* Mesh; const TCHAR* Mat; };
+				static const FWarmPair Pairs[] =
+				{
+					{ TEXT("SM_FX_FireTornado"), TEXT("M_FX_FireTornado") },
+					{ TEXT("SM_FX_Pillar"),      TEXT("M_FX_Pillar") },
+					{ TEXT("SM_FX_Bolt"),        TEXT("M_FX_Bolt") },
+					{ TEXT("SM_RuneCircle"),     TEXT("M_FX_RuneCircle") },
+					{ TEXT("SM_FX_WindVortex"),  TEXT("M_FX_WindRibbon") },
+					{ TEXT("SM_FX_Ring"),        TEXT("M_FX_Ring") },
+					{ TEXT("SM_FX_Sphere"),      TEXT("M_FX_Core") },
+				};
+				for (int32 i = 0; i < UE_ARRAY_COUNT(Pairs); ++i)
+				{
+					FFXMeshParams P;
+					P.MeshName = Pairs[i].Mesh;
+					P.MaterialName = Pairs[i].Mat;
+					P.Transform = FTransform(FRotator::ZeroRotator, WarmLoc + FVector(0.f, 0.f, -20.f + i * 2.f), FVector(0.005f));
+					P.LifeTime = 1.6f;
+					P.ScaleStart = FVector(1.f);
+					P.ScaleEnd = FVector(1.f);
+					P.ScaleTime = 0.f;
+					P.FadeOutTime = 0.1f;
+					P.ScalarParams.Add(TEXT("Fade"), 1.f);
+					FXSys->SpawnMesh(P);
+				}
+			});
+		}
+	}
 
 	TWeakObjectPtr<UWizardSmokeTest> WeakThis(this);
 	FTSTicker::GetCoreTicker().AddTicker(FTickerDelegate::CreateLambda([WeakThis](float DeltaTime) -> bool
@@ -188,7 +257,7 @@ void UWizardSmokeTest::RunBuiltIn()
 		{ 1.60f, TEXT("AimNearest") },
 		{ 1.70f, TEXT("Select 0") },
 		{ 1.80f, TEXT("Cast 0 0.9") },
-		{ 2.15f, TEXT("Shot 02_fire") },
+		{ 2.30f, TEXT("Shot 02_fire") },
 		{ 2.80f, TEXT("AimNearest") },
 		{ 2.90f, TEXT("Select 1") },
 		{ 3.00f, TEXT("Cast 1 0.9") },
@@ -200,7 +269,7 @@ void UWizardSmokeTest::RunBuiltIn()
 		{ 5.40f, TEXT("AimNearest") },
 		{ 5.50f, TEXT("Select 3") },
 		{ 5.60f, TEXT("Cast 3 0.9") },
-		{ 5.85f, TEXT("Shot 05_lightning") },
+		{ 5.74f, TEXT("Shot 05_lightning") },
 		{ 6.70f, TEXT("Stats") },
 		{ 7.00f, TEXT("Reset") },
 		{ 7.70f, TEXT("Shot 06_after_reset") },

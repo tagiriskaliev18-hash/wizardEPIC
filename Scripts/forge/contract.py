@@ -65,7 +65,8 @@ ENV_MATERIALS = [
 FX_SPRITE_MASTERS = ["M_FX_Add", "M_FX_Alpha"]
 FX_MESH_MATERIALS = [
     "M_FX_Core", "M_FX_Ring", "M_FX_Pillar", "M_FX_WindRibbon",
-    "M_FX_Bolt", "M_FX_Crystal",
+    "M_FX_Bolt", "M_FX_Crystal", "M_FX_FireTornado", "M_FX_RuneCircle",
+    "M_StaffCrystal",
 ]
 FX_CHIP_MATERIALS = [f"M_FX_Chip_{m}" for m in MATERIALS]
 FX_DECALS = [
@@ -77,6 +78,7 @@ FX_DECALS = [
 FX_MESHES = [
     "SM_FX_Quad", "SM_FX_Sphere", "SM_FX_Ring",
     "SM_FX_Pillar", "SM_FX_Bolt", "SM_FX_Chip", "SM_FX_Shard",
+    "SM_FX_FireTornado", "SM_RuneCircle",
 ]
 
 # ── FX sprite textures ────────────────────────────────────────────────────────
