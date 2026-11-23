@@ -1,7 +1,10 @@
 #include "HUDWidgets.h"
 
+#include "Blueprint/WidgetLayoutLibrary.h"
 #include "Blueprint/WidgetTree.h"
 #include "Components/Border.h"
+#include "Components/CanvasPanel.h"
+#include "Components/CanvasPanelSlot.h"
 #include "Components/HorizontalBox.h"
 #include "Components/HorizontalBoxSlot.h"
 #include "Components/Image.h"
@@ -266,6 +269,36 @@ void UWizardScorePopupWidget::Activate(const FScorePopupInfo& Info)
 		Label->SetColorAndOpacity(FSlateColor(Color));
 	}
 	SetRenderOpacity(1.f);
+	UpdateScreenPosition();
+}
+
+void UWizardScorePopupWidget::UpdateScreenPosition()
+{
+	APlayerController* PC = GetOwningPlayer();
+	UCanvasPanelSlot* CanvasSlot = Cast<UCanvasPanelSlot>(Slot);
+	if (!PC || !CanvasSlot)
+	{
+		return;
+	}
+
+	FVector2D ScreenPos = FVector2D::ZeroVector;
+	if (!WorldLocation.IsNearlyZero() && PC->ProjectWorldLocationToScreen(WorldLocation, ScreenPos, true))
+	{
+		const float ViewportScale = FMath::Max(0.01f, UWidgetLayoutLibrary::GetViewportScale(this));
+		CanvasSlot->SetPosition(ScreenPos / ViewportScale);
+		SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+	else if (WorldLocation.IsNearlyZero())
+	{
+		const FVector2D ViewportSize = UWidgetLayoutLibrary::GetViewportSize(this);
+		const float ViewportScale = FMath::Max(0.01f, UWidgetLayoutLibrary::GetViewportScale(this));
+		CanvasSlot->SetPosition((ViewportSize / ViewportScale) * FVector2D(0.5f, 0.42f));
+		SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
+	else
+	{
+		SetVisibility(ESlateVisibility::Collapsed);
+	}
 }
 
 void UWizardScorePopupWidget::NativeTick(const FGeometry& MyGeometry, float DeltaTime)
@@ -279,6 +312,7 @@ void UWizardScorePopupWidget::NativeTick(const FGeometry& MyGeometry, float Delt
 		return;
 	}
 
+	UpdateScreenPosition();
 	const float T = FMath::Clamp(Age / Life, 0.f, 1.f);
 	SetRenderTranslation(FVector2D(0.f, -45.f * T));
 	SetRenderOpacity(T < 0.65f ? 1.f : FMath::Clamp(1.f - (T - 0.65f) / 0.35f, 0.f, 1.f));
@@ -434,14 +468,25 @@ void UWizardHUDWidget::NativeOnInitialized()
 		}
 	}
 
-	// 6. Floating Popups Layer
+	// 6. Floating Popups Layer (screen-space canvas projected from WorldLocation)
 	{
-		PopupLayer = WidgetTree->ConstructWidget<UVerticalBox>(UVerticalBox::StaticClass());
+		PopupLayer = WidgetTree->ConstructWidget<UCanvasPanel>(UCanvasPanel::StaticClass());
 		if (UOverlaySlot* S = Root->AddChildToOverlay(PopupLayer))
 		{
-			S->SetHorizontalAlignment(HAlign_Right);
-			S->SetVerticalAlignment(VAlign_Top);
-			S->SetPadding(FMargin(0.f, 128.f, 34.f, 0.f));
+			S->SetHorizontalAlignment(HAlign_Fill);
+			S->SetVerticalAlignment(VAlign_Fill);
+		}
+	}
+
+	// 7. Arena Reset Flash Overlay
+	{
+		ResetFlashOverlay = WidgetTree->ConstructWidget<UImage>(UImage::StaticClass());
+		ResetFlashOverlay->SetColorAndOpacity(FLinearColor(0.85f, 0.96f, 1.f, 0.f));
+		ResetFlashOverlay->SetVisibility(ESlateVisibility::Collapsed);
+		if (UOverlaySlot* S = Root->AddChildToOverlay(ResetFlashOverlay))
+		{
+			S->SetHorizontalAlignment(HAlign_Fill);
+			S->SetVerticalAlignment(VAlign_Fill);
 		}
 	}
 }
@@ -546,6 +591,23 @@ void UWizardHUDWidget::NativeTick(const FGeometry& MyGeometry, float DeltaTime)
 			TitleAge = -1.f;
 		}
 	}
+
+	if (ResetFlash > 0.f)
+	{
+		ResetFlash = FMath::Max(0.f, ResetFlash - DeltaTime * 2.5f);
+		if (ResetFlashOverlay)
+		{
+			if (ResetFlash > 0.f)
+			{
+				const float Alpha = FMath::Pow(ResetFlash, 1.6f) * 0.55f;
+				ResetFlashOverlay->SetColorAndOpacity(FLinearColor(0.85f, 0.96f, 1.f, Alpha));
+			}
+			else
+			{
+				ResetFlashOverlay->SetVisibility(ESlateVisibility::Collapsed);
+			}
+		}
+	}
 }
 
 void UWizardHUDWidget::RefreshSpells()
@@ -586,6 +648,11 @@ void UWizardHUDWidget::ShowTitleCard()
 void UWizardHUDWidget::PlayArenaResetFlash()
 {
 	ResetFlash = 1.f;
+	if (ResetFlashOverlay)
+	{
+		ResetFlashOverlay->SetColorAndOpacity(FLinearColor(0.85f, 0.96f, 1.f, 0.55f));
+		ResetFlashOverlay->SetVisibility(ESlateVisibility::SelfHitTestInvisible);
+	}
 }
 
 UWizardAbilityComponent* UWizardHUDWidget::GetAbilities()
@@ -648,10 +715,14 @@ void UWizardHUDWidget::OnPopup(const FScorePopupInfo& Info)
 	UWizardScorePopupWidget* Popup = CreateWidget<UWizardScorePopupWidget>(GetOwningPlayer(), UWizardScorePopupWidget::StaticClass());
 	if (Popup)
 	{
+		if (UCanvasPanelSlot* CanvasSlot = PopupLayer->AddChildToCanvas(Popup))
+		{
+			CanvasSlot->SetAutoSize(true);
+			CanvasSlot->SetAlignment(FVector2D(0.5f, 0.5f));
+		}
 		Popup->Activate(Info);
-		PopupLayer->AddChildToVerticalBox(Popup);
 		Popups.Add(Popup);
-		if (Popups.Num() > 6)
+		if (Popups.Num() > 10)
 		{
 			if (Popups[0])
 			{

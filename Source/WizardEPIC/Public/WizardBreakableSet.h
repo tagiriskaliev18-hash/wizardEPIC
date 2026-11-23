@@ -63,7 +63,7 @@ protected:
 	int32 InitialInstanceCount = 0;
 
 	/** Applies damage to alive instances inside a test volume and breaks the spent ones. */
-	int32 DamageInstances(const FSpellImpact& Impact, const TFunctionRef<bool(const FVector& Centre, FVector& OutLaunch)>& Selector, TArray<FDestructibleEvent>& OutEvents);
+	int32 DamageInstances(const FSpellImpact& Impact, const TFunctionRef<bool(const FVector& Centre, FVector& OutLaunch, float& OutFalloff)>& Selector, TArray<FDestructibleEvent>& OutEvents);
 
 	/** Called after an instance broke. Children may spawn extra feedback. */
 	virtual void OnInstanceBroken(int32 Index, const FTransform& WorldTransform, const FSpellImpact& Impact) {}

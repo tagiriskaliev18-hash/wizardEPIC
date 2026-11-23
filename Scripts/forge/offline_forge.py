@@ -418,22 +418,105 @@ def gen_spell_icon(element: str, w=256, h=256):
 # OBJ mesh writers
 # ═══════════════════════════════════════════════════════════════════════════════
 
+def _sub_v3(a, b):
+    return (a[0] - b[0], a[1] - b[1], a[2] - b[2])
+
+
+def _cross_v3(a, b):
+    return (
+        a[1] * b[2] - a[2] * b[1],
+        a[2] * b[0] - a[0] * b[2],
+        a[0] * b[1] - a[1] * b[0],
+    )
+
+
+def _face_normal(verts, face):
+    """Compute unit normal for a polygon face (1-indexed) using Newell's method."""
+    nx = ny = nz = 0.0
+    m = len(face)
+    for k in range(m):
+        v0 = verts[face[k] - 1]
+        v1 = verts[face[(k + 1) % m] - 1]
+        nx += (v0[1] - v1[1]) * (v0[2] + v1[2])
+        ny += (v0[2] - v1[2]) * (v0[0] + v1[0])
+        nz += (v0[0] - v1[0]) * (v0[1] + v1[1])
+    length = math.sqrt(nx * nx + ny * ny + nz * nz)
+    if length > 1e-9:
+        return (nx / length, ny / length, nz / length)
+    return (0.0, 0.0, 1.0)
+
+
+def _compute_smooth_normals(verts, faces):
+    """Compute area-weighted smooth per-vertex normals for 1-indexed faces."""
+    accum = [[0.0, 0.0, 0.0] for _ in verts]
+    for face in faces:
+        if len(face) < 3:
+            continue
+        v0 = verts[face[0] - 1]
+        for k in range(1, len(face) - 1):
+            v1 = verts[face[k] - 1]
+            v2 = verts[face[k + 1] - 1]
+            c = _cross_v3(_sub_v3(v1, v0), _sub_v3(v2, v0))
+            for idx in (face[0] - 1, face[k] - 1, face[k + 1] - 1):
+                accum[idx][0] += c[0]
+                accum[idx][1] += c[1]
+                accum[idx][2] += c[2]
+    return [_normalize_v3(tuple(a)) for a in accum]
+
+
+def _box_project_uv(v, normal, scale=100.0):
+    """Triplanar/box UV projection from vertex position and face normal."""
+    ax, ay, az = abs(normal[0]), abs(normal[1]), abs(normal[2])
+    if az >= ax and az >= ay:
+        return (v[0] / scale, v[1] / scale)
+    if ax >= ay:
+        return (v[1] / scale, v[2] / scale)
+    return (v[0] / scale, v[2] / scale)
+
+
 def write_obj(path: Path, verts: list[tuple], faces: list[tuple], normals=None, uvs=None):
-    """Write a simple OBJ. faces are 1-indexed tuples of vertex indices."""
+    """Write an OBJ with guaranteed valid vertex normals (vn), UVs (vt), and v/vt/vn faces."""
     path.parent.mkdir(parents=True, exist_ok=True)
-    with open(path, "w") as f:
-        f.write(f"# wizardEPIC offline_forge\n")
+    valid_faces = [fc for fc in faces if len(fc) >= 3]
+
+    use_vertex_normals = normals is not None and len(normals) == len(verts)
+    use_vertex_uvs = uvs is not None and len(uvs) == len(verts)
+
+    out_normals = list(normals) if use_vertex_normals else []
+    out_uvs = list(uvs) if use_vertex_uvs else []
+    face_records = []
+
+    for face in valid_faces:
+        fn = _face_normal(verts, face)
+        if not use_vertex_normals:
+            vn_idx = len(out_normals) + 1
+            out_normals.append(fn)
+        else:
+            vn_idx = None
+
+        corners = []
+        for vi in face:
+            v_pos = verts[vi - 1]
+            n_idx = vi if use_vertex_normals else vn_idx
+            if use_vertex_uvs:
+                t_idx = vi
+            else:
+                n_for_uv = out_normals[n_idx - 1]
+                out_uvs.append(_box_project_uv(v_pos, n_for_uv))
+                t_idx = len(out_uvs)
+            corners.append(f"{vi}/{t_idx}/{n_idx}")
+        face_records.append("f " + " ".join(corners) + "\n")
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write("# wizardEPIC offline_forge\n")
         for v in verts:
             f.write(f"v {v[0]:.4f} {v[1]:.4f} {v[2]:.4f}\n")
-        if normals:
-            for n in normals:
-                f.write(f"vn {n[0]:.4f} {n[1]:.4f} {n[2]:.4f}\n")
-        if uvs:
-            for uv in uvs:
-                f.write(f"vt {uv[0]:.4f} {uv[1]:.4f}\n")
-        for face in faces:
-            indices = " ".join(str(i) for i in face)
-            f.write(f"f {indices}\n")
+        for uv in out_uvs:
+            f.write(f"vt {uv[0]:.4f} {uv[1]:.4f}\n")
+        for n in out_normals:
+            f.write(f"vn {n[0]:.4f} {n[1]:.4f} {n[2]:.4f}\n")
+        for line in face_records:
+            f.write(line)
 
 # ── FX mesh generators ───────────────────────────────────────────────────────
 
@@ -441,8 +524,9 @@ def gen_quad():
     """100x100 plane in XY, centred, UV 0..1."""
     verts = [(-50, -50, 0), (50, -50, 0), (50, 50, 0), (-50, 50, 0)]
     uvs = [(0, 0), (1, 0), (1, 1), (0, 1)]
+    normals = [(0, 0, 1)] * 4
     faces = [(1, 2, 3, 4)]
-    return verts, faces, None, uvs
+    return verts, faces, normals, uvs
 
 def gen_icosphere(radius=50, subdivisions=2):
     """Icosphere with smooth normals."""
@@ -544,14 +628,19 @@ def gen_pillar(base_w=110, height=400, segments=8):
     return verts, faces, None, None
 
 def gen_bolt():
-    """Unit box 1x1x1 centred at origin."""
+    """Unit box 1x1x1 centred at origin with outward winding."""
     s = 0.5
     verts = [
-        (-s,-s,-s),(s,-s,-s),(s,s,-s),(-s,s,-s),
-        (-s,-s,s),(s,-s,s),(s,s,s),(-s,s,s),
+        (-s, -s, -s), (s, -s, -s), (s, s, -s), (-s, s, -s),
+        (-s, -s, s),  (s, -s, s),  (s, s, s),  (-s, s, s),
     ]
     faces = [
-        (1,2,3,4),(5,8,7,6),(1,5,6,2),(2,6,7,3),(3,7,8,4),(4,8,5,1),
+        (1, 4, 3, 2),  # bottom (-Z)
+        (5, 6, 7, 8),  # top (+Z)
+        (1, 2, 6, 5),  # -Y
+        (2, 3, 7, 6),  # +X
+        (3, 4, 8, 7),  # +Y
+        (4, 1, 5, 8),  # -X
     ]
     return verts, faces, None, None
 
@@ -599,20 +688,76 @@ FX_MESH_GENERATORS = {
     "SM_FX_Shard":  gen_shard,
 }
 
-# ── Environment mesh generators ──────────────────────────────────────────────
+# ── Environment mesh generators & terrain elevation ──────────────────────────
+
+def _build_structure_pads():
+    """Return list of (x, y, pad_radius, pad_z) for every placed structure."""
+    shape_map = {name: half_ext for name, _mat, half_ext, _np, _hp in C.DESTRUCTIBLE_SHAPES}
+    pads = []
+    for name, (sx, sy, _sz, _yaw) in C.STRUCTURE_PLACEMENTS:
+        hx, hy, _hz = shape_map.get(name, (100.0, 100.0, 100.0))
+        r_pad = math.hypot(hx, hy) + 60.0
+        pads.append((sx, sy, r_pad, terrain_bowl_raw_z(sx, sy)))
+    return pads
+
+
+def terrain_bowl_raw_z(x, y, radius=C.BOWL_RADIUS):
+    """Raw concave bowl + FBM noise elevation before structure pad flattening."""
+    u = x / (2.0 * radius) + 0.5
+    v_ = y / (2.0 * radius) + 0.5
+    d = math.hypot(x, y) / radius
+    z = -60.0 * d * d
+    z += fbm_2d(u, v_, 3, 4.0, seed=700) * 40.0 - 20.0
+    return z
+
+
+def terrain_bowl_z(x, y, radius=C.BOWL_RADIUS, pads=None):
+    """Bowl elevation with smooth flat pads under structure footprints."""
+    z = terrain_bowl_raw_z(x, y, radius)
+    if pads is None:
+        pads = _build_structure_pads()
+    blend_margin = 180.0
+    for sx, sy, r_pad, z_pad in pads:
+        dist = math.hypot(x - sx, y - sy)
+        if dist <= r_pad:
+            return z_pad
+        if dist < r_pad + blend_margin:
+            t = _smoothstep((dist - r_pad) / blend_margin)
+            z = _lerp(z_pad, z, t)
+    return z
+
+
+def make_terrain_sampler(verts, radius=3600, subdivs=32):
+    """Build exact bilinear/triangle sampler matching the generated SM_Terrain mesh."""
+    stride = subdivs + 1
+    cell = (2.0 * radius) / subdivs
+
+    def sample(x, y):
+        fx = max(0.0, min(float(subdivs) - 1e-6, (x + radius) / cell))
+        fy = max(0.0, min(float(subdivs) - 1e-6, (y + radius) / cell))
+        ix = int(fx)
+        iy = int(fy)
+        tx = fx - ix
+        ty = fy - iy
+        z00 = verts[iy * stride + ix][2]
+        z10 = verts[iy * stride + ix + 1][2]
+        z01 = verts[(iy + 1) * stride + ix][2]
+        z11 = verts[(iy + 1) * stride + ix + 1][2]
+        return _lerp(_lerp(z00, z10, tx), _lerp(z01, z11, tx), ty)
+
+    return sample
+
 
 def gen_terrain_bowl(radius=3600, subdivs=32):
-    """Concave bowl terrain mesh."""
+    """Concave bowl terrain mesh with flat structure pads and smooth normals."""
     verts = []; faces = []; uvs = []
+    pads = _build_structure_pads()
     for iy in range(subdivs + 1):
         for ix in range(subdivs + 1):
             u = ix / subdivs; v_ = iy / subdivs
             x = (u - 0.5) * 2 * radius
             y = (v_ - 0.5) * 2 * radius
-            d = math.hypot(x, y) / radius
-            z = -60 * d * d  # bowl dip
-            # noise
-            z += fbm_2d(u, v_, 3, 4.0, seed=700) * 40 - 20
+            z = terrain_bowl_z(x, y, radius, pads)
             verts.append((x, y, z))
             uvs.append((u, v_))
     for iy in range(subdivs):
@@ -622,7 +767,8 @@ def gen_terrain_bowl(radius=3600, subdivs=32):
             c = b + subdivs + 1
             d = a + subdivs + 1
             faces.append((a, b, c, d))
-    return verts, faces, None, uvs
+    normals = _compute_smooth_normals(verts, faces)
+    return verts, faces, normals, uvs
 
 def gen_cliff_ring(radius=3700, segments=24, height=600):
     """Ring of cliff geometry around the arena."""
@@ -738,10 +884,11 @@ def gen_ruin_column(radius=35, height=250):
     return verts, faces, None, None
 
 def gen_ruin_wall(width=200, height=180, depth=30):
-    """Broken wall section."""
+    """Closed broken wall section with front, back, side, top, and bottom faces."""
     rng = random.Random(654)
     verts = []; faces = []
     sx, sy = 6, 4
+    stride = sx + 1
     for iy in range(sy + 1):
         for ix in range(sx + 1):
             u = ix / sx; v_ = iy / sy
@@ -750,26 +897,43 @@ def gen_ruin_wall(width=200, height=180, depth=30):
             # broken top edge
             if iy == sy:
                 z *= rng.uniform(0.6, 1.0)
-            y = (rng.uniform(-0.5, 0.5)) * depth * 0.1
+            y = -depth * 0.5 + (rng.uniform(-0.5, 0.5)) * depth * 0.1
             verts.append((x, y, z))
     for iy in range(sy):
         for ix in range(sx):
-            a = iy * (sx + 1) + ix + 1
+            a = iy * stride + ix + 1
             b = a + 1
-            c = b + sx + 1
-            d = a + sx + 1
-            faces.append((a, b, c, d))
+            c = b + stride
+            d = a + stride
+            faces.append((a, b, c, d))  # front (-Y)
     # back face (offset by depth)
     offset = len(verts)
-    for v in verts[:]:
+    for v in verts[:offset]:
         verts.append((v[0], v[1] + depth, v[2]))
     for iy in range(sy):
         for ix in range(sx):
-            a = offset + iy * (sx + 1) + ix + 1
+            a = offset + iy * stride + ix + 1
             b = a + 1
-            c = b + sx + 1
-            d = a + sx + 1
-            faces.append((a, d, c, b))  # reversed winding
+            c = b + stride
+            d = a + stride
+            faces.append((a, d, c, b))  # back (+Y)
+
+    def f_idx(iy, ix):
+        return iy * stride + ix + 1
+
+    def b_idx(iy, ix):
+        return offset + iy * stride + ix + 1
+
+    # bottom (-Z) and top (+Z) faces
+    for ix in range(sx):
+        faces.append((f_idx(0, ix), b_idx(0, ix), b_idx(0, ix + 1), f_idx(0, ix + 1)))
+        faces.append((f_idx(sy, ix), f_idx(sy, ix + 1), b_idx(sy, ix + 1), b_idx(sy, ix)))
+
+    # left (-X) and right (+X) side faces
+    for iy in range(sy):
+        faces.append((f_idx(iy, 0), f_idx(iy + 1, 0), b_idx(iy + 1, 0), b_idx(iy, 0)))
+        faces.append((f_idx(iy, sx), b_idx(iy, sx), b_idx(iy + 1, sx), f_idx(iy + 1, sx)))
+
     return verts, faces, None, None
 
 ENV_MESH_GENERATORS = {
@@ -789,9 +953,9 @@ ENV_MESH_GENERATORS = {
 
 def voronoi_fracture_box(name: str, half_extents: tuple, n_pieces: int, seed: int = 42):
     """
-    Generates convex Voronoi-like pieces from a box.
-    Returns list of (verts, faces, local_transform, mass, is_grounded, supports, laterals).
-    For simplicity: slice the box into n_pieces horizontal/vertical slabs.
+    Generates convex Voronoi-like pieces from a box with base at Z=0 (Z in [0, 2*hz]).
+    Each piece's OBJ vertices are centered in its own local space around (0, 0, 0),
+    while (cx_p, cy_p, cz_p) is stored in `transform` so UE does not double-offset.
     """
     rng = random.Random(seed)
     hx, hy, hz = half_extents
@@ -804,55 +968,50 @@ def voronoi_fracture_box(name: str, half_extents: tuple, n_pieces: int, seed: in
 
     piece_idx = 0
     for layer in range(n_layers):
-        z_lo = -hz + 2 * hz * layer / n_layers
-        z_hi = -hz + 2 * hz * (layer + 1) / n_layers
+        z_lo = 2.0 * hz * layer / n_layers
+        z_hi = 2.0 * hz * (layer + 1) / n_layers
         n_cols = pieces_per_layer + (1 if layer < remainder else 0)
 
         for col in range(n_cols):
-            # Divide the XY rectangle
-            # Simple radial sectors from centre
-            a0 = 2 * math.pi * col / n_cols
-            a1 = 2 * math.pi * (col + 1) / n_cols
-            # Build a convex prism for this sector within the bounding box
-            cx_local = 0
-            cy_local = 0
-            # Generate polygon points (intersection of sector with box)
+            # Divide the XY rectangle into exact convex sector polygons
+            a0 = 2.0 * math.pi * col / n_cols
+            a1 = 2.0 * math.pi * (col + 1) / n_cols
             pts_2d = _sector_box_intersect(a0, a1, hx, hy)
             if len(pts_2d) < 3:
-                # fallback: just a box slice
                 pts_2d = [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)]
 
-            # Extrude to 3D
+            # Piece center in structure-local space (base at Z=0)
+            cx_p = sum(p[0] for p in pts_2d) / len(pts_2d)
+            cy_p = sum(p[1] for p in pts_2d) / len(pts_2d)
+            cz_p = 0.5 * (z_lo + z_hi)
+
+            # Extrude to 3D in piece-local space centered around (0, 0, 0)
+            dz_half = 0.5 * (z_hi - z_lo)
             verts_3d = []
             for p in pts_2d:
-                verts_3d.append((p[0], p[1], z_lo))
+                verts_3d.append((p[0] - cx_p, p[1] - cy_p, -dz_half))
             for p in pts_2d:
-                verts_3d.append((p[0], p[1], z_hi))
+                verts_3d.append((p[0] - cx_p, p[1] - cy_p, dz_half))
 
             n_pts = len(pts_2d)
             faces_3d = []
-            # bottom face
-            faces_3d.append(tuple(range(1, n_pts + 1)))
-            # top face
-            faces_3d.append(tuple(range(n_pts * 2, n_pts, -1)))
-            # sides
+            # bottom face (-Z outward winding)
+            faces_3d.append(tuple([1] + list(range(n_pts, 1, -1))))
+            # top face (+Z outward winding)
+            faces_3d.append(tuple(range(n_pts + 1, n_pts * 2 + 1)))
+            # sides (CCW outward)
             for i in range(n_pts):
                 j = (i + 1) % n_pts
                 faces_3d.append((i + 1, j + 1, j + n_pts + 1, i + n_pts + 1))
 
-            # Centre of piece
-            cx_p = sum(v[0] for v in verts_3d) / len(verts_3d)
-            cy_p = sum(v[1] for v in verts_3d) / len(verts_3d)
-            cz_p = (z_lo + z_hi) / 2
-
-            # Extent
-            ext_x = max(abs(v[0] - cx_p) for v in verts_3d)
-            ext_y = max(abs(v[1] - cy_p) for v in verts_3d)
-            ext_z = (z_hi - z_lo) / 2
+            # Half-extents around piece local (0, 0, 0)
+            ext_x = max(abs(v[0]) for v in verts_3d)
+            ext_y = max(abs(v[1]) for v in verts_3d)
+            ext_z = dz_half
 
             # Mass proportional to volume
-            vol = ext_x * ext_y * ext_z * 8
-            mass = max(5.0, vol / 1e4 * 25)
+            vol = ext_x * ext_y * ext_z * 8.0
+            mass = max(5.0, vol / 1e4 * 25.0)
 
             is_grounded = (layer == 0)
 
@@ -878,7 +1037,7 @@ def voronoi_fracture_box(name: str, half_extents: tuple, n_pieces: int, seed: in
             pieces.append({
                 "verts": verts_3d,
                 "faces": faces_3d,
-                "transform": (cx_p, cy_p, cz_p, 0, 0, 0),
+                "transform": (round(cx_p, 4), round(cy_p, 4), round(cz_p, 4), 0.0, 0.0, 0.0),
                 "mass": round(mass, 1),
                 "health": 100.0,
                 "extent": (round(ext_x, 1), round(ext_y, 1), round(ext_z, 1)),
@@ -890,21 +1049,54 @@ def voronoi_fracture_box(name: str, half_extents: tuple, n_pieces: int, seed: in
 
     return pieces
 
-def _sector_box_intersect(a0, a1, hx, hy):
-    """Get polygon of a sector [a0..a1] intersected with box [-hx..hx, -hy..hy]."""
-    pts = [(0, 0)]  # centre
-    n_subdiv = 4
-    for i in range(n_subdiv + 1):
-        a = a0 + (a1 - a0) * i / n_subdiv
-        dx, dy = math.cos(a), math.sin(a)
-        # ray from origin, find intersection with box
-        t = float("inf")
-        if abs(dx) > 1e-9:
-            t = min(t, abs(hx / dx))
-        if abs(dy) > 1e-9:
-            t = min(t, abs(hy / dy))
-        t = max(t, 0.1)  # safety
-        pts.append((dx * t, dy * t))
+
+def _ray_box_hit(angle: float, hx: float, hy: float):
+    dx, dy = math.cos(angle), math.sin(angle)
+    t = float("inf")
+    if abs(dx) > 1e-9:
+        t = min(t, abs(hx / dx))
+    if abs(dy) > 1e-9:
+        t = min(t, abs(hy / dy))
+    return (dx * t, dy * t)
+
+
+def _sector_box_intersect(a0: float, a1: float, hx: float, hy: float):
+    """Exact convex CCW polygon of sector [a0..a1] intersected with [-hx..hx, -hy..hy]."""
+    span = a1 - a0
+    if span >= 2.0 * math.pi - 1e-5:
+        return [(-hx, -hy), (hx, -hy), (hx, hy), (-hx, hy)]
+
+    p_start = _ray_box_hit(a0, hx, hy)
+    p_end = _ray_box_hit(a1, hx, hy)
+
+    # Box corners strictly inside (a0, a1), sorted by angle
+    corners = [(hx, hy), (-hx, hy), (-hx, -hy), (hx, -hy)]
+    in_corners = []
+    for cx, cy in corners:
+        ang = math.atan2(cy, cx)
+        while ang < a0 - 1e-7:
+            ang += 2.0 * math.pi
+        while ang >= a0 + 2.0 * math.pi - 1e-7:
+            ang -= 2.0 * math.pi
+        if a0 + 1e-5 < ang < a1 - 1e-5:
+            in_corners.append((ang, (cx, cy)))
+    in_corners.sort(key=lambda item: item[0])
+
+    raw_pts = []
+    if span < math.pi - 1e-4:
+        raw_pts.append((0.0, 0.0))
+    raw_pts.append(p_start)
+    for _, c_pt in in_corners:
+        raw_pts.append(c_pt)
+    raw_pts.append(p_end)
+
+    # Deduplicate near-coincident consecutive vertices
+    pts = []
+    for pt in raw_pts:
+        if not pts or math.hypot(pt[0] - pts[-1][0], pt[1] - pts[-1][1]) > 1e-4:
+            pts.append(pt)
+    if len(pts) >= 2 and math.hypot(pts[0][0] - pts[-1][0], pts[0][1] - pts[-1][1]) <= 1e-4:
+        pts.pop()
     return pts
 
 # ═══════════════════════════════════════════════════════════════════════════════
@@ -1141,13 +1333,23 @@ def main():
 
     # 5. Environment meshes
     print("=== Environment Meshes ===")
+    terrain_sampler = None
     for name, key, params in C.ENV_MESHES:
         gen = ENV_MESH_GENERATORS[key]
         path = mesh_dir / f"{name}.obj"
         verts, faces, normals, uvs = gen(**params)
+        if name == "SM_Terrain":
+            terrain_sampler = make_terrain_sampler(
+                verts,
+                radius=params.get("radius", C.BOWL_RADIUS),
+                subdivs=params.get("subdivs", 32),
+            )
         write_obj(path, verts, faces, normals, uvs)
         print(f"  {name}: {len(verts)} verts, {len(faces)} faces -> {path.name}")
         total += 1
+
+    def _ground_z(x, y, base_z=0.0):
+        return round(terrain_sampler(x, y) + base_z, 3) if terrain_sampler else base_z
 
     # 6. Destructible fracture pieces
     print("=== Destructible Fracture ===")
@@ -1156,14 +1358,14 @@ def main():
         shape_dir = dest_dir / shape_name
         shape_dir.mkdir(parents=True, exist_ok=True)
 
-        # Generate whole mesh (simple box for now)
+        # Generate whole mesh with base at Z=0 (Z in [0, 2*hz]) and outward winding
         hx, hy, hz = half_ext
         whole_verts = [
             (-hx, -hy, 0), (hx, -hy, 0), (hx, hy, 0), (-hx, hy, 0),
             (-hx, -hy, 2*hz), (hx, -hy, 2*hz), (hx, hy, 2*hz), (-hx, hy, 2*hz),
         ]
         whole_faces = [
-            (1,2,3,4), (5,8,7,6), (1,5,6,2), (2,6,7,3), (3,7,8,4), (4,8,5,1),
+            (1, 4, 3, 2), (5, 6, 7, 8), (1, 2, 6, 5), (2, 3, 7, 6), (3, 4, 8, 7), (4, 1, 5, 8),
         ]
         write_obj(shape_dir / f"SM_{shape_name}_Whole.obj", whole_verts, whole_faces)
 
@@ -1213,24 +1415,54 @@ def main():
     print(f"  S_AmbientLoop: {len(samples)} samples -> {path.name}")
     total += 1
 
-    # 8. Layout JSON (for ue_forge.py)
+    # 8. Layout JSON (for ue_forge.py) with terrain-aligned Z coordinates
     print("=== Layout Data ===")
+    scatter_rng = random.Random(12345)
+    scatter_layout = {}
+    for mesh_name, cfg in C.SCATTER_CONFIG.items():
+        count = cfg.get("count", 100)
+        r_min, r_max = cfg.get("radius_range", (100, 3400))
+        z_off = cfg.get("z", 0)
+        instances = []
+        for _ in range(count):
+            angle = scatter_rng.uniform(0, 2 * math.pi)
+            radius = scatter_rng.uniform(r_min, r_max)
+            sx = radius * math.cos(angle)
+            sy = radius * math.sin(angle)
+            sz = _ground_z(sx, sy, z_off)
+            yaw = scatter_rng.uniform(0, 360)
+            scale = scatter_rng.uniform(0.7, 1.3)
+            instances.append([round(sx, 2), round(sy, 2), sz, round(yaw, 2), round(scale, 3)])
+        scatter_layout[mesh_name] = {**cfg, "instances": instances}
+
+    ruin_props = []
+    for ruin_name in ["SM_RuinColumn", "SM_RuinWall"]:
+        for i, p in enumerate(C._ring(4, 2900, 0, math.pi / 4)):
+            ruin_props.append({
+                "mesh": ruin_name,
+                "label": f"{ruin_name}_{i}",
+                "x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3],
+            })
+
     layout = {
+        "player_start": {"x": 0.0, "y": 0.0, "z": _ground_z(0.0, 0.0, 95.0)},
         "structures": [
-            {"definition": name, "x": p[0], "y": p[1], "z": p[2], "yaw": p[3]}
+            {"definition": name, "x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3]}
             for name, p in C.STRUCTURE_PLACEMENTS
         ],
         "breakables": {
-            def_name: [{"x": p[0], "y": p[1], "z": p[2], "yaw": p[3]} for p in placements]
+            def_name: [
+                {"x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3]}
+                for p in placements
+            ]
             for def_name, placements in C.BREAKABLE_PLACEMENTS.items()
         },
         "crystals": [
-            {"x": p[0], "y": p[1], "z": p[2], "yaw": p[3]}
+            {"x": p[0], "y": p[1], "z": _ground_z(p[0], p[1], p[2]), "yaw": p[3]}
             for p in C.CRYSTAL_PLACEMENTS
         ],
-        "scatter": {
-            name: cfg for name, cfg in C.SCATTER_CONFIG.items()
-        },
+        "ruin_props": ruin_props,
+        "scatter": scatter_layout,
         "destruction": destruction_data,
         "spells": C.SPELL_DEFAULTS,
     }

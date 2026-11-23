@@ -66,11 +66,14 @@ bool AWizardBreakableSet::GetInstanceTransform(int32 Index, FTransform& OutTrans
 int32 AWizardBreakableSet::ApplyImpactRadial(const FSpellImpact& Impact, TArray<FDestructibleEvent>& OutEvents)
 {
 	const float RadiusSq = Impact.Radius * Impact.Radius;
-	return DamageInstances(Impact, [&](const FVector& Centre, FVector& OutLaunch) -> bool
+	return DamageInstances(Impact, [&](const FVector& Centre, FVector& OutLaunch, float& OutFalloff) -> bool
 	{
-		if (FVector::DistSquared(Impact.Origin, Centre) <= RadiusSq)
+		const float DistSq = static_cast<float>(FVector::DistSquared(Impact.Origin, Centre));
+		if (DistSq <= RadiusSq)
 		{
 			OutLaunch = Impact.Origin;
+			const float T = Impact.Radius > KINDA_SMALL_NUMBER ? FMath::Clamp(FMath::Sqrt(DistSq) / Impact.Radius, 0.f, 1.f) : 0.f;
+			OutFalloff = FMath::Lerp(1.f, 0.35f, T);
 			return true;
 		}
 		return false;
@@ -83,7 +86,7 @@ int32 AWizardBreakableSet::ApplyImpactCone(const FVector& Origin, const FVector&
 	const float CosHalf = FMath::Cos(FMath::DegreesToRadians(FMath::Clamp(HalfAngleDeg, 1.f, 89.f)));
 	const float RangeSq = Range * Range;
 
-	return DamageInstances(Impact, [&](const FVector& Centre, FVector& OutLaunch) -> bool
+	return DamageInstances(Impact, [&](const FVector& Centre, FVector& OutLaunch, float& OutFalloff) -> bool
 	{
 		const FVector To = Centre - Origin;
 		const float DistSq = static_cast<float>(To.SizeSquared());
@@ -91,11 +94,13 @@ int32 AWizardBreakableSet::ApplyImpactCone(const FVector& Origin, const FVector&
 		{
 			return false;
 		}
-		if (FVector::DotProduct(DirN, To / FMath::Sqrt(DistSq)) < CosHalf)
+		const float Dist = FMath::Sqrt(DistSq);
+		if (FVector::DotProduct(DirN, To / Dist) < CosHalf)
 		{
 			return false;
 		}
 		OutLaunch = Origin;
+		OutFalloff = 1.f - 0.55f * (Dist / FMath::Max(1.f, Range));
 		return true;
 	}, OutEvents);
 }
@@ -103,16 +108,19 @@ int32 AWizardBreakableSet::ApplyImpactCone(const FVector& Origin, const FVector&
 int32 AWizardBreakableSet::ApplyLaunchUpward(const FVector& Origin, float Radius, float Height, const FSpellImpact& Impact, TArray<FDestructibleEvent>& OutEvents)
 {
 	const float RadiusSq = Radius * Radius;
-	return DamageInstances(Impact, [&](const FVector& Centre, FVector& OutLaunch) -> bool
+	return DamageInstances(Impact, [&](const FVector& Centre, FVector& OutLaunch, float& OutFalloff) -> bool
 	{
 		const float DZ = static_cast<float>(Centre.Z - Origin.Z);
 		if (DZ < -120.f || DZ > Height)
 		{
 			return false;
 		}
-		if (FVector::DistSquared2D(Origin, Centre) <= RadiusSq)
+		const float DistSq2D = static_cast<float>(FVector::DistSquared2D(Origin, Centre));
+		if (DistSq2D <= RadiusSq)
 		{
 			OutLaunch = Origin;
+			const float T = Radius > KINDA_SMALL_NUMBER ? FMath::Clamp(FMath::Sqrt(DistSq2D) / Radius, 0.f, 1.f) : 0.f;
+			OutFalloff = FMath::Lerp(1.f, 0.45f, T);
 			return true;
 		}
 		return false;
@@ -146,7 +154,7 @@ FBoxSphereBounds AWizardBreakableSet::GetBreakableBounds() const
 	return Super::GetBreakableBounds();
 }
 
-int32 AWizardBreakableSet::DamageInstances(const FSpellImpact& Impact, const TFunctionRef<bool(const FVector& Centre, FVector& OutLaunch)>& Selector, TArray<FDestructibleEvent>& OutEvents)
+int32 AWizardBreakableSet::DamageInstances(const FSpellImpact& Impact, const TFunctionRef<bool(const FVector& Centre, FVector& OutLaunch, float& OutFalloff)>& Selector, TArray<FDestructibleEvent>& OutEvents)
 {
 	if (!Instances || !Definition)
 	{
@@ -173,12 +181,13 @@ int32 AWizardBreakableSet::DamageInstances(const FSpellImpact& Impact, const TFu
 		}
 
 		FVector LaunchOrigin;
-		if (!Selector(T.GetLocation(), LaunchOrigin))
+		float Falloff = 1.f;
+		if (!Selector(T.GetLocation(), LaunchOrigin, Falloff))
 		{
 			continue;
 		}
 
-		const float Dmg = Impact.Damage * MatMul;
+		const float Dmg = Impact.Damage * FMath::Clamp(Falloff, 0.f, 1.f) * MatMul;
 		InstanceDamage[i] += Dmg;
 		if (InstanceDamage[i] >= MaxHP)
 		{

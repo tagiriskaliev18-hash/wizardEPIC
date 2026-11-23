@@ -105,6 +105,8 @@ public:
 	/** World-space centre of an intact piece (INDEX_NONE guard). */
 	bool GetPieceCentre(int32 PieceIndex, FVector& OutCentre) const;
 
+	bool IsPieceIntact(int32 PieceIndex) const;
+
 	/** Applies damage to one intact piece from an external source and releases it when the health is spent. */
 	int32 DamagePiece(int32 PieceIndex, float Damage, const FSpellImpact& Impact, TArray<FDestructibleEvent>& OutEvents);
 

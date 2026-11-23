@@ -1,6 +1,7 @@
 #include "WizardAbilityComponent.h"
 
 #include "CameraFX.h"
+#include "Components/AudioComponent.h"
 #include "Components/SkeletalMeshComponent.h"
 #include "Engine/World.h"
 #include "FXSubsystem.h"
@@ -34,58 +35,142 @@ namespace
 			Spell->Element = ESpellElement::Fire;
 			Spell->DisplayName = NSLOCTEXT("Wizard", "SpellFire", "Пепельная сфера");
 			Spell->Delivery = ESpellDelivery::Projectile;
-			Spell->Cooldown = 1.0f;
-			Spell->Damage = 135.f;
-			Spell->DamageRadius = 640.f;
-			Spell->LaunchSpeed = 1550.f;
-			Spell->UpBias = 0.35f;
-			Spell->Color = FLinearColor(1.f, 0.48f, 0.10f);
+			Spell->Cooldown = 1.2f;
+			Spell->CastDelay = 0.1f;
+			Spell->ChargeTime = 1.0f;
+			Spell->ChargeScaleMax = 2.2f;
+			Spell->MinChargeTime = 0.22f;
+			Spell->Damage = 100.f;
+			Spell->DamageRadius = 600.f;
+			Spell->LaunchSpeed = 1400.f;
+			Spell->UpBias = 0.25f;
+			Spell->Spin = 420.f;
+			Spell->ProjectileSpeed = 4200.f;
+			Spell->ProjectileRadius = 28.f;
+			Spell->ProjectileGravityScale = 0.05f;
+			Spell->ProjectileLife = 3.0f;
+			Spell->Color = FLinearColor(1.0f, 0.45f, 0.12f);
+			Spell->LightIntensity = 6.e6f;
+			Spell->LightRadius = 2200.f;
+			Spell->LightDuration = 0.55f;
+			Spell->FovKick = 3.5f;
+			Spell->HitStop = 0.045f;
 			Spell->CastSound = TEXT("Cast_Fire");
+			Spell->ChargeSound = TEXT("Charge");
 			Spell->ImpactSound = TEXT("Explosion_Fire");
 			Spell->TravelSound = TEXT("Whoosh");
+			Spell->DamageMultipliers.Stone = 1.0f;
+			Spell->DamageMultipliers.Wood = 1.6f;
+			Spell->DamageMultipliers.Pottery = 1.8f;
+			Spell->DamageMultipliers.Rock = 0.7f;
+			Spell->DamageMultipliers.Crystal = 1.0f;
+			Spell->DamageMultipliers.Foliage = 2.0f;
 			break;
 		case 1: // Earth
 			Spell->Element = ESpellElement::Earth;
 			Spell->DisplayName = NSLOCTEXT("Wizard", "SpellEarth", "Земляной клин");
 			Spell->Delivery = ESpellDelivery::GroundLine;
-			Spell->Cooldown = 1.6f;
-			Spell->Damage = 150.f;
-			Spell->DamageRadius = 420.f;
-			Spell->LaunchSpeed = 1650.f;
-			Spell->UpBias = 0.85f;
-			Spell->Color = FLinearColor(0.79f, 0.54f, 0.24f);
+			Spell->Cooldown = 1.8f;
+			Spell->CastDelay = 0.15f;
+			Spell->ChargeTime = 1.2f;
+			Spell->ChargeScaleMax = 2.0f;
+			Spell->MinChargeTime = 0.25f;
+			Spell->Damage = 130.f;
+			Spell->DamageRadius = 400.f;
+			Spell->LaunchSpeed = 1800.f;
+			Spell->UpBias = 0.6f;
+			Spell->Spin = 300.f;
+			Spell->PillarCount = 6;
+			Spell->PillarSpacing = 230.f;
+			Spell->PillarHeight = 520.f;
+			Spell->PillarRadius = 120.f;
+			Spell->PillarRiseTime = 0.16f;
+			Spell->PillarStepDelay = 0.055f;
+			Spell->PillarLifetime = 4.0f;
+			Spell->PillarSinkTime = 0.5f;
+			Spell->PillarStartDistance = 250.f;
+			Spell->Color = FLinearColor(0.75f, 0.52f, 0.23f);
+			Spell->LightIntensity = 3.e6f;
+			Spell->LightRadius = 1600.f;
+			Spell->LightDuration = 0.4f;
+			Spell->FovKick = 4.0f;
+			Spell->HitStop = 0.06f;
 			Spell->CastSound = TEXT("Cast_Earth");
+			Spell->ChargeSound = TEXT("Charge");
 			Spell->ImpactSound = TEXT("Erupt_Earth");
+			Spell->DamageMultipliers.Stone = 1.2f;
+			Spell->DamageMultipliers.Wood = 1.0f;
+			Spell->DamageMultipliers.Pottery = 1.5f;
+			Spell->DamageMultipliers.Rock = 1.4f;
+			Spell->DamageMultipliers.Crystal = 0.8f;
+			Spell->DamageMultipliers.Foliage = 0.6f;
 			break;
 		case 2: // Wind
 			Spell->Element = ESpellElement::Wind;
 			Spell->DisplayName = NSLOCTEXT("Wizard", "SpellWind", "Эхо бури");
 			Spell->Delivery = ESpellDelivery::Cone;
-			Spell->Cooldown = 1.1f;
-			Spell->Damage = 105.f;
-			Spell->ConeRange = 1750.f;
-			Spell->ConeHalfAngle = 24.f;
-			Spell->LaunchSpeed = 1900.f;
-			Spell->UpBias = 0.28f;
-			Spell->Color = FLinearColor(0.75f, 0.91f, 0.89f);
+			Spell->Cooldown = 0.9f;
+			Spell->CastDelay = 0.05f;
+			Spell->ChargeTime = 0.8f;
+			Spell->ChargeScaleMax = 1.8f;
+			Spell->MinChargeTime = 0.18f;
+			Spell->Damage = 60.f;
+			Spell->DamageRadius = 500.f;
+			Spell->LaunchSpeed = 2200.f;
+			Spell->UpBias = 0.1f;
+			Spell->Spin = 600.f;
+			Spell->ConeRange = 1600.f;
+			Spell->ConeHalfAngle = 22.f;
+			Spell->ConeDuration = 0.55f;
+			Spell->Color = FLinearColor(0.65f, 0.88f, 0.85f);
+			Spell->LightIntensity = 2.e6f;
+			Spell->LightRadius = 1400.f;
+			Spell->LightDuration = 0.3f;
+			Spell->FovKick = 2.5f;
+			Spell->HitStop = 0.0f;
 			Spell->CastSound = TEXT("Cast_Wind");
+			Spell->ChargeSound = TEXT("Charge");
 			Spell->ImpactSound = TEXT("Gust_Wind");
+			Spell->DamageMultipliers.Stone = 0.5f;
+			Spell->DamageMultipliers.Wood = 1.4f;
+			Spell->DamageMultipliers.Pottery = 1.2f;
+			Spell->DamageMultipliers.Rock = 0.4f;
+			Spell->DamageMultipliers.Crystal = 0.6f;
+			Spell->DamageMultipliers.Foliage = 3.0f;
 			break;
 		case 3: // Lightning
 		default:
 			Spell->Element = ESpellElement::Lightning;
 			Spell->DisplayName = NSLOCTEXT("Wizard", "SpellLightning", "Грозовой жезл");
 			Spell->Delivery = ESpellDelivery::Strike;
-			Spell->Cooldown = 1.8f;
-			Spell->Damage = 160.f;
-			Spell->DamageRadius = 520.f;
-			Spell->LaunchSpeed = 1450.f;
+			Spell->Cooldown = 1.5f;
+			Spell->CastDelay = 0.0f;
+			Spell->ChargeTime = 1.1f;
+			Spell->ChargeScaleMax = 2.5f;
+			Spell->MinChargeTime = 0.2f;
+			Spell->Damage = 150.f;
+			Spell->DamageRadius = 350.f;
+			Spell->LaunchSpeed = 1600.f;
+			Spell->UpBias = 0.3f;
+			Spell->Spin = 500.f;
 			Spell->StrikeCount = 3;
 			Spell->StrikeInterval = 0.09f;
-			Spell->StrikeShatterBonus = 3.f;
-			Spell->Color = FLinearColor(0.80f, 0.92f, 1.f);
+			Spell->StrikeShatterBonus = 3.0f;
+			Spell->Color = FLinearColor(0.78f, 0.9f, 1.0f);
+			Spell->LightIntensity = 12.e6f;
+			Spell->LightRadius = 3000.f;
+			Spell->LightDuration = 0.15f;
+			Spell->FovKick = 5.0f;
+			Spell->HitStop = 0.055f;
 			Spell->CastSound = TEXT("Cast_Lightning");
+			Spell->ChargeSound = TEXT("Charge");
 			Spell->ImpactSound = TEXT("Thunder");
+			Spell->DamageMultipliers.Stone = 1.5f;
+			Spell->DamageMultipliers.Wood = 0.8f;
+			Spell->DamageMultipliers.Pottery = 1.0f;
+			Spell->DamageMultipliers.Rock = 1.8f;
+			Spell->DamageMultipliers.Crystal = 2.0f;
+			Spell->DamageMultipliers.Foliage = 0.5f;
 			break;
 		}
 		return Spell;
@@ -162,7 +247,8 @@ void UWizardAbilityComponent::TickComponent(float DeltaTime, ELevelTick TickType
 			{
 				if (UCharacterMovementComponent* Move = Char->GetCharacterMovement())
 				{
-					Move->Velocity *= 0.45f;
+					Move->Velocity.X *= 0.45f;
+					Move->Velocity.Y *= 0.45f;
 				}
 			}
 		}
@@ -189,7 +275,18 @@ USpellDataAsset* UWizardAbilityComponent::GetSpell(int32 SlotIndex) const
 
 	if (!MutableThis->SpellCache[SlotIndex])
 	{
-		USpellDataAsset* Loaded = Cast<USpellDataAsset>(FSoftObjectPath(WizardPaths::Spells[SlotIndex]).TryLoad());
+		USpellDataAsset* Loaded = nullptr;
+		if (const AWizardGameMode* GM = AWizardGameMode::Get(this))
+		{
+			if (GM->SpellLoadout.IsValidIndex(SlotIndex) && GM->SpellLoadout[SlotIndex])
+			{
+				Loaded = GM->SpellLoadout[SlotIndex];
+			}
+		}
+		if (!Loaded)
+		{
+			Loaded = Cast<USpellDataAsset>(FSoftObjectPath(WizardPaths::Spells[SlotIndex]).TryLoad());
+		}
 		if (!Loaded)
 		{
 			Loaded = CreateFallbackSpell(MutableThis, SlotIndex);
@@ -213,6 +310,7 @@ bool UWizardAbilityComponent::SelectSpell(int32 SlotIndex)
 		ChargeT01 = 0.f;
 		OnChargeChanged.Broadcast(0.f);
 	}
+	StopChargeSound(0.08f);
 	SelectedIndex = SlotIndex;
 	OnSpellSelected.Broadcast(SelectedIndex, GetSelectedSpell());
 	return true;
@@ -261,6 +359,7 @@ bool UWizardAbilityComponent::StartCharge()
 		return false;
 	}
 
+	StopChargeSound(0.04f);
 	bCharging = true;
 	ChargeHoldTime = 0.f;
 	ChargeT01 = 0.f;
@@ -272,7 +371,7 @@ bool UWizardAbilityComponent::StartCharge()
 		{
 			if (!Spell->ChargeSound.IsNone())
 			{
-				Audio->Play2D(Spell->ChargeSound, 0.45f, 1.f);
+				ActiveChargeSound = Audio->Play2D(Spell->ChargeSound, 0.45f, 1.f);
 			}
 		}
 	}
@@ -291,6 +390,7 @@ bool UWizardAbilityComponent::ReleaseCast(float ForceChargeT01)
 	ChargeHoldTime = 0.f;
 	ChargeT01 = 0.f;
 	OnChargeChanged.Broadcast(0.f);
+	StopChargeSound(0.08f);
 
 	float Frac = 0.f, Sec = 0.f;
 	if (GetCooldown(SelectedIndex, Frac, Sec))
@@ -551,4 +651,21 @@ void UWizardAbilityComponent::CancelPendingCast()
 	CastDelayTimer = 0.f;
 	ChargeHoldTime = 0.f;
 	ChargeT01 = 0.f;
+	StopChargeSound(0.f);
+}
+
+void UWizardAbilityComponent::StopChargeSound(float FadeOut)
+{
+	if (ActiveChargeSound && IsValid(ActiveChargeSound))
+	{
+		if (UWizardAudioSubsystem* Audio = UWizardAudioSubsystem::Get(this))
+		{
+			Audio->Stop(ActiveChargeSound, FadeOut);
+		}
+		else
+		{
+			ActiveChargeSound->Stop();
+		}
+	}
+	ActiveChargeSound = nullptr;
 }

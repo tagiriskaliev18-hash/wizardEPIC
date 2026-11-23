@@ -36,10 +36,11 @@ echo    1-4         Select spell (Fire / Earth / Wind / Lightning)
 echo    Mouse wheel Cycle spells
 echo    LMB         Cast (tap) / hold to charge
 echo    Shift       Sprint
-echo    Space       Dash
+echo    RMB / Q     Dash
+echo    Space       Jump
 echo    R           Reset arena
 echo    H           Toggle hints
-echo    Escape      Toggle mouse capture
+echo    Tab         Toggle mouse capture
 echo.
 
 REM — Launch in standalone game mode ——————————————————————————————————

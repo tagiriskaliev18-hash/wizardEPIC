@@ -398,6 +398,15 @@ bool ADestructibleStructure::GetPieceCentre(int32 PieceIndex, FVector& OutCentre
 	return true;
 }
 
+bool ADestructibleStructure::IsPieceIntact(int32 PieceIndex) const
+{
+	if (!Pieces.IsValidIndex(PieceIndex) || !Pieces[PieceIndex])
+	{
+		return false;
+	}
+	return Pieces[PieceIndex]->State == EPieceState::Intact || Pieces[PieceIndex]->State == EPieceState::Pending;
+}
+
 int32 ADestructibleStructure::DamagePiece(int32 PieceIndex, float InDamage, const FSpellImpact& Impact, TArray<FDestructibleEvent>& OutEvents)
 {
 	if (!Pieces.IsValidIndex(PieceIndex))
@@ -545,6 +554,7 @@ void ADestructibleStructure::ProcessIntegrity()
 	{
 		if (UWizardDestructionSubsystem* Destruction = GetDestruction())
 		{
+			Destruction->ReactToBatch(CascadeEvents);
 			Destruction->OnDestructibleBatch.Broadcast(CascadeEvents);
 		}
 	}

@@ -50,7 +50,13 @@ private:
 	int32 NextStep = 0;
 	bool bFinished = false;
 
+	float MoveForward = 0.f;
+	float MoveRight = 0.f;
+	float MoveTimeRemaining = 0.f;
+	float WaitRemaining = 0.f;
+
 	void RunBuiltIn();
 	void RunScriptFile(const FString& Path);
 	void ExecuteLine(const FString& Line);
+	bool AimAtNearestBreakable(UWorld* World, APawn* Pawn, class UWizardAbilityComponent* Abilities);
 };

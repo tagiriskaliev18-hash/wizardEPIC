@@ -95,10 +95,11 @@ Or open the project in the editor and press **Play**.
 | **LMB** (tap) | Cast spell |
 | **LMB** (hold) | Charge spell (bigger blast at release) |
 | `Shift` | Sprint |
-| `Space` | Dash |
+| **RMB** / `Q` | Dash |
+| `Space` | Jump |
 | `R` | Reset arena (restore all structures) |
 | `H` | Toggle hint overlays |
-| `Escape` | Toggle mouse capture |
+| `Tab` | Toggle mouse capture |
 
 ---
 

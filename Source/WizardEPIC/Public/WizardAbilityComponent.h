@@ -11,6 +11,7 @@
 #include "WizardTypes.h"
 #include "WizardAbilityComponent.generated.h"
 
+class UAudioComponent;
 class USpellDataAsset;
 class UWizardCameraShake;
 
@@ -152,6 +153,10 @@ private:
 	float DashTimeLeft = 0.f;
 	FVector DashDirection = FVector::ZeroVector;
 
+	UPROPERTY(Transient)
+	TObjectPtr<UAudioComponent> ActiveChargeSound = nullptr;
+
 	void ApplyPendingCast();
 	void CancelPendingCast();
+	void StopChargeSound(float FadeOut = 0.08f);
 };

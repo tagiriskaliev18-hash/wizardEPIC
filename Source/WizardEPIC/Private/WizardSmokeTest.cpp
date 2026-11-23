@@ -1,8 +1,11 @@
 #include "WizardSmokeTest.h"
 
 #include "Containers/Ticker.h"
+#include "CrystalTarget.h"
+#include "DestructibleStructure.h"
 #include "Engine/Engine.h"
 #include "Engine/World.h"
+#include "EngineUtils.h"
 #include "GameFramework/Pawn.h"
 #include "GameFramework/PlayerController.h"
 #include "HAL/FileManager.h"
@@ -14,6 +17,8 @@
 #include "Misc/Paths.h"
 #include "UnrealClient.h"
 #include "WizardAbilityComponent.h"
+#include "WizardBreakableBase.h"
+#include "WizardBreakableSet.h"
 #include "WizardDestructionSubsystem.h"
 #include "WizardGameMode.h"
 #include "WizardScoreSubsystem.h"
@@ -100,6 +105,33 @@ void UWizardSmokeTest::Start(float InitialDelay)
 
 void UWizardSmokeTest::Step(float DeltaTime)
 {
+	if (MoveTimeRemaining > 0.f)
+	{
+		UWorld* World = GEngine ? GEngine->GetWorldFromContextObject(WorldContext.Get(), EGetWorldErrorMode::ReturnNull) : nullptr;
+		APlayerController* PC = World ? World->GetFirstPlayerController() : nullptr;
+		if (APawn* Pawn = PC ? PC->GetPawn() : nullptr)
+		{
+			const FRotator YawRot(0.f, PC->GetControlRotation().Yaw, 0.f);
+			const FVector ForwardDir = FRotationMatrix(YawRot).GetUnitAxis(EAxis::X);
+			const FVector RightDir = FRotationMatrix(YawRot).GetUnitAxis(EAxis::Y);
+			if (!FMath::IsNearlyZero(MoveForward))
+			{
+				Pawn->AddMovementInput(ForwardDir, MoveForward);
+			}
+			if (!FMath::IsNearlyZero(MoveRight))
+			{
+				Pawn->AddMovementInput(RightDir, MoveRight);
+			}
+		}
+		MoveTimeRemaining = FMath::Max(0.f, MoveTimeRemaining - DeltaTime);
+	}
+
+	if (WaitRemaining > 0.f)
+	{
+		WaitRemaining = FMath::Max(0.f, WaitRemaining - DeltaTime);
+		return;
+	}
+
 	Time += DeltaTime;
 	if (Time < 0.f)
 	{
@@ -123,15 +155,19 @@ void UWizardSmokeTest::RunBuiltIn()
 	static const FStepDef Steps[] =
 	{
 		{ 0.2f,  TEXT("Shot 01_arena_start") },
+		{ 1.0f,  TEXT("AimNearest") },
 		{ 1.2f,  TEXT("Select 0") },
 		{ 1.4f,  TEXT("Cast 0 0.8") },
 		{ 2.6f,  TEXT("Shot 02_fire") },
+		{ 3.0f,  TEXT("AimNearest") },
 		{ 3.2f,  TEXT("Select 1") },
 		{ 3.4f,  TEXT("Cast 1 0.8") },
 		{ 4.8f,  TEXT("Shot 03_earth") },
+		{ 5.2f,  TEXT("AimNearest") },
 		{ 5.4f,  TEXT("Select 2") },
 		{ 5.6f,  TEXT("Cast 2 0.8") },
 		{ 6.6f,  TEXT("Shot 04_wind") },
+		{ 7.0f,  TEXT("AimNearest") },
 		{ 7.2f,  TEXT("Select 3") },
 		{ 7.4f,  TEXT("Cast 3 0.8") },
 		{ 8.8f,  TEXT("Shot 05_lightning") },
@@ -260,9 +296,128 @@ void UWizardSmokeTest::ExecuteLine(const FString& Line)
 	{
 		Ab->LookAt(FVector(FCString::Atof(*Tokens[1]), FCString::Atof(*Tokens[2]), FCString::Atof(*Tokens[3])));
 	}
+	else if (Cmd.Equals(TEXT("Aim"), ESearchCase::IgnoreCase) && Tokens.Num() >= 3 && Ab)
+	{
+		const float Pitch = FCString::Atof(*Tokens[1]);
+		const float Yaw = FCString::Atof(*Tokens[2]);
+		Ab->SetViewRotation(FRotator(Pitch, Yaw, 0.f));
+	}
+	else if (Cmd.Equals(TEXT("AimNearest"), ESearchCase::IgnoreCase) && Ab)
+	{
+		AimAtNearestBreakable(World, Pawn, Ab);
+	}
+	else if (Cmd.Equals(TEXT("Move"), ESearchCase::IgnoreCase) && Tokens.Num() >= 4)
+	{
+		MoveForward = FMath::Clamp(FCString::Atof(*Tokens[1]), -1.f, 1.f);
+		MoveRight = FMath::Clamp(FCString::Atof(*Tokens[2]), -1.f, 1.f);
+		MoveTimeRemaining = FMath::Max(0.f, FCString::Atof(*Tokens[3]));
+	}
+	else if (Cmd.Equals(TEXT("Wait"), ESearchCase::IgnoreCase))
+	{
+		if (Tokens.Num() >= 2)
+		{
+			WaitRemaining = FMath::Max(0.f, FCString::Atof(*Tokens[1]));
+		}
+	}
 	else if (Cmd.Equals(TEXT("Quit"), ESearchCase::IgnoreCase))
 	{
 		bFinished = true;
 		RequestQuit(WorldContext.Get());
 	}
+}
+
+bool UWizardSmokeTest::AimAtNearestBreakable(UWorld* World, APawn* Pawn, UWizardAbilityComponent* Abilities)
+{
+	if (!World || !Pawn || !Abilities)
+	{
+		return false;
+	}
+
+	const FVector Origin = Pawn->GetActorLocation();
+	float BestDistSq = TNumericLimits<float>::Max();
+	FVector BestPoint = FVector::ZeroVector;
+	bool bFound = false;
+
+	for (TActorIterator<AWizardBreakableBase> It(World); It; ++It)
+	{
+		AWizardBreakableBase* Breakable = *It;
+		if (!Breakable || !IsValid(Breakable))
+		{
+			continue;
+		}
+
+		if (AWizardBreakableSet* Set = Cast<AWizardBreakableSet>(Breakable))
+		{
+			const int32 Count = Set->GetInstanceCount();
+			for (int32 i = 0; i < Count; ++i)
+			{
+				if (!Set->IsInstanceAlive(i))
+				{
+					continue;
+				}
+				FTransform InstT;
+				if (Set->GetInstanceTransform(i, InstT))
+				{
+					const FVector Target = InstT.GetLocation() + FVector(0.f, 0.f, 35.f);
+					const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
+					if (DSq < BestDistSq)
+					{
+						BestDistSq = DSq;
+						BestPoint = Target;
+						bFound = true;
+					}
+				}
+			}
+		}
+		else if (ADestructibleStructure* Struct = Cast<ADestructibleStructure>(Breakable))
+		{
+			const int32 PieceCount = Struct->GetPieceCount();
+			for (int32 i = 0; i < PieceCount; ++i)
+			{
+				FVector PieceCentre;
+				if (Struct->IsPieceIntact(i) && Struct->GetPieceCentre(i, PieceCentre))
+				{
+					const float DSq = static_cast<float>(FVector::DistSquared(Origin, PieceCentre));
+					if (DSq < BestDistSq)
+					{
+						BestDistSq = DSq;
+						BestPoint = PieceCentre;
+						bFound = true;
+					}
+				}
+			}
+		}
+		else if (ACrystalTarget* Crystal = Cast<ACrystalTarget>(Breakable))
+		{
+			if (!Crystal->IsAlive())
+			{
+				continue;
+			}
+			const FVector Target = Crystal->GetBreakableBounds().Origin;
+			const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
+			if (DSq < BestDistSq)
+			{
+				BestDistSq = DSq;
+				BestPoint = Target;
+				bFound = true;
+			}
+		}
+		else
+		{
+			const FVector Target = Breakable->GetBreakableBounds().Origin;
+			const float DSq = static_cast<float>(FVector::DistSquared(Origin, Target));
+			if (DSq < BestDistSq)
+			{
+				BestDistSq = DSq;
+				BestPoint = Target;
+				bFound = true;
+			}
+		}
+	}
+
+	if (bFound)
+	{
+		Abilities->LookAt(BestPoint);
+	}
+	return bFound;
 }

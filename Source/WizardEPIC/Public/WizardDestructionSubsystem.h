@@ -61,6 +61,9 @@ public:
 	UPROPERTY(BlueprintAssignable, Category = Wizard)
 	FOnArenaReset OnArenaReset;
 
+	/** Feedback for one batch: dust and chips, break sounds, camera shake, score. */
+	void ReactToBatch(const TArray<FDestructibleEvent>& Events);
+
 private:
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<AWizardBreakableBase>> Breakables;
@@ -72,8 +75,6 @@ private:
 	float SettleCheckAccumulator = 0.f;
 
 	void Flush();
-	/** Feedback for one batch: dust and chips, break sounds, camera shake, score. */
-	void ReactToBatch(const TArray<FDestructibleEvent>& Events);
 	/** Settles the oldest loose pieces while above MaxLoosePieces. */
 	void EnforceLooseLimit();
 };

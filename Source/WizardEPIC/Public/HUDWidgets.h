@@ -12,6 +12,7 @@
 #include "WizardTypes.h"
 #include "HUDWidgets.generated.h"
 
+class UCanvasPanel;
 class UImage;
 class UMaterialInstanceDynamic;
 class UOverlay;
@@ -86,6 +87,7 @@ public:
 	UWizardScorePopupWidget(const FObjectInitializer& ObjectInitializer);
 
 	void Activate(const FScorePopupInfo& Info);
+	void UpdateScreenPosition();
 	virtual void NativeTick(const FGeometry& MyGeometry, float DeltaTime) override;
 
 private:
@@ -145,7 +147,10 @@ private:
 	TObjectPtr<UWidget> TitleCard = nullptr;
 
 	UPROPERTY(Transient)
-	TObjectPtr<UVerticalBox> PopupLayer = nullptr;
+	TObjectPtr<UCanvasPanel> PopupLayer = nullptr;
+
+	UPROPERTY(Transient)
+	TObjectPtr<UImage> ResetFlashOverlay = nullptr;
 
 	UPROPERTY(Transient)
 	TArray<TObjectPtr<USpellSlotWidget>> Slots;
