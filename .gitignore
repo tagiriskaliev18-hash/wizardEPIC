@@ -1,0 +1,24 @@
+# Unreal Engine
+Binaries/
+DerivedDataCache/
+Intermediate/
+Saved/
+Build/
+!Build/*.bat
+.vs/
+.idea/
+*.sln
+*.suo
+*.user
+*.VC.db
+*.opendb
+*.opensdf
+*.sdf
+*.pdb
+Plugins/*/Binaries/
+Plugins/*/Intermediate/
+# orchestration scratch (not part of the project)
+.sdd/
+# OS
+Thumbs.db
+.DS_Store
