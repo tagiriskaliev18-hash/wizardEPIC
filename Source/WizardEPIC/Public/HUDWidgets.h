@@ -160,9 +160,19 @@ private:
 	float ResetFlash = 0.f;
 
 	UWizardAbilityComponent* GetAbilities();
+
+	UFUNCTION()
 	void OnScoreChanged(int64 Score, int64 BestScore);
+
+	UFUNCTION()
 	void OnComboChanged(float Multiplier, float TimeLeft);
+
+	UFUNCTION()
 	void OnPopup(const FScorePopupInfo& Info);
+
+	UFUNCTION()
 	void OnArenaReset();
+
+	UFUNCTION()
 	void OnSpellCast(int32 SlotIndex, float ChargeT01);
 };

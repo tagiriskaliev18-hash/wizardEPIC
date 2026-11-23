@@ -65,6 +65,10 @@ public:
 
 	/** World-space launch direction and speed derived from a spell impact. */
 	static FVector ComputeLaunchVelocity(const FSpellImpact& Impact, const FVector& Centre, float Mass);
+
+	FTransform InitialLocalTransform = FTransform::Identity;
+	float PieceMass = 25.f;
+	float RestTime = 0.f;
 };
 
 /**

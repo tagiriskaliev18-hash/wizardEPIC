@@ -489,4 +489,38 @@ public:
 
 	/** Removes every transient effect (sprites, bolts, scheduled callbacks) and returns pooled objects. */
 	void ClearTransient();
+
+	virtual ~UWizardFXSubsystem() override;
+
+private:
+	struct FFXRuntimeState;
+	TUniquePtr<FFXRuntimeState> State;
+
+	UPROPERTY(Transient)
+	TObjectPtr<AActor> FXHost = nullptr;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<class UInstancedStaticMeshComponent>> SpriteLayers;
+
+	UPROPERTY(Transient)
+	TMap<FName, TObjectPtr<UStaticMesh>> MeshCache;
+
+	UPROPERTY(Transient)
+	TMap<FName, TObjectPtr<UMaterialInterface>> MaterialCache;
+
+	UPROPERTY(Transient)
+	TMap<FName, TObjectPtr<UTexture2D>> TextureCache;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UStaticMeshComponent>> MeshPoolAll;
+
+	UPROPERTY(Transient)
+	TArray<TObjectPtr<UPointLightComponent>> LightPoolAll;
+
+	AActor* EnsureHost();
+	class UInstancedStaticMeshComponent* EnsureSpriteLayer(EFXSpriteKind Kind);
+	UStaticMeshComponent* AcquirePoolMesh();
+	void ReturnPoolMesh(UStaticMeshComponent* Comp);
+	UPointLightComponent* AcquirePoolLight();
+	void ReturnPoolLight(UPointLightComponent* Comp);
 };

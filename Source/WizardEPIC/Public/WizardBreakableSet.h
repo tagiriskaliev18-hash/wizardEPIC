@@ -56,6 +56,9 @@ protected:
 	/** Alive flags per instance (indices are stable: broken instances keep their slot). */
 	TArray<uint8> InstanceAlive;
 
+	/** Saved world transforms of all instances for arena reset. */
+	TArray<FTransform> InitialTransforms;
+
 	/** True for instances that were alive when the level started. */
 	int32 InitialInstanceCount = 0;
 
