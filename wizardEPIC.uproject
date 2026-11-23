@@ -1,0 +1,31 @@
+{
+  "FileVersion": 3,
+  "EngineAssociation": "5.8",
+  "Category": "",
+  "Description": "STIKHIA (СТИХИЯ) - elemental spell-casting destruction arena built for Unreal Engine 5.8.",
+  "Modules": [
+    {
+      "Name": "WizardEPIC",
+      "Type": "Runtime",
+      "LoadingPhase": "Default"
+    }
+  ],
+  "Plugins": [
+    {
+      "Name": "PythonScriptPlugin",
+      "Enabled": true
+    },
+    {
+      "Name": "GeometryScripting",
+      "Enabled": true
+    },
+    {
+      "Name": "ChaosSolverPlugin",
+      "Enabled": true
+    },
+    {
+      "Name": "GeometryCollectionPlugin",
+      "Enabled": true
+    }
+  ]
+}
